@@ -156,6 +156,7 @@ static switch_status_t digit_action_callback(switch_ivr_dmachine_match_t *match)
 	switch_event_t *event;
 	switch_status_t status;
 	int exec = 0;
+	int api = 0;
 	char *string = act->string;
 	switch_channel_t *channel;
 	switch_core_session_t *use_session = act->session;
@@ -173,6 +174,7 @@ static switch_status_t digit_action_callback(switch_ivr_dmachine_match_t *match)
 
 	string = switch_core_session_strdup(use_session, act->string);
 	exec = 0;
+	api = 0;
 
 	channel = switch_core_session_get_channel(use_session);
 
@@ -201,6 +203,9 @@ static switch_status_t digit_action_callback(switch_ivr_dmachine_match_t *match)
 					}
 				}
 			}
+		} else if (!strncasecmp(string, "api:", 4)) {
+			string += 4;
+			api = 1;
 		}
 
 		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, string, act->value);
@@ -208,11 +213,13 @@ static switch_status_t digit_action_callback(switch_ivr_dmachine_match_t *match)
 
 		if (exec) {
 			switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "execute", exec == 1 ? "non-blocking" : "blocking");
-		} 
+		} else {
+			switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "api", "blocking");
+		}
 
 		if ((status = switch_core_session_queue_event(use_session, &event)) != SWITCH_STATUS_SUCCESS) {
 			switch_event_destroy(&event);
-			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(use_session), SWITCH_LOG_WARNING, "%s event queue faiure.\n", 
+			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(use_session), SWITCH_LOG_WARNING, "%s event queue failure.\n", 
 							  switch_core_session_get_name(use_session));
 		}
 	}
@@ -230,6 +237,18 @@ static switch_status_t digit_action_callback(switch_ivr_dmachine_match_t *match)
 
 			switch_ivr_broadcast_in_thread(use_session, cmd, exec_flags);
 		}
+       } else if (api) {
+	       switch_stream_handle_t stream = { 0 };
+               SWITCH_STANDARD_STREAM(stream);
+               if ((status == switch_api_execute(string, act->value, NULL, &stream)) != SWITCH_STATUS_SUCCESS) {
+                       switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(act->session), SWITCH_LOG_WARNING, "%s Digit match binding [%s][%s], failed\n", 
+				 switch_core_session_get_name(use_session), act->string, act->value);
+               }
+               if (stream.data) {
+                       switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(act->session), SWITCH_LOG_DEBUG, "%s Digit match binding [%s][%s], %s\n", 
+				 switch_core_session_get_name(use_session), act->string, act->value, (char *)stream.data);
+               }
+               switch_safe_free(stream.data);
 	}
 	
 
