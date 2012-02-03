@@ -2925,7 +2925,7 @@ switch_status_t sofia_glue_tech_set_codec(private_object_t *tech_pvt, int force)
 	tech_pvt->read_codec.agreed_pt = tech_pvt->agreed_pt;
 
 	if (force != 2) {
-		switch_core_session_set_read_codec(tech_pvt->session, &tech_pvt->read_codec);
+		switch_core_session_set_real_read_codec(tech_pvt->session, &tech_pvt->read_codec);
 		switch_core_session_set_write_codec(tech_pvt->session, &tech_pvt->write_codec);
 	}
 
@@ -5139,7 +5139,22 @@ char *sofia_glue_get_url_from_contact(char *buf, uint8_t to_dup)
 {
 	char *url = NULL, *e;
 
-	if ((url = strchr(buf, '<')) && (e = strchr(url, '>'))) {
+	while(*buf == ' ') {
+		buf++;
+	}
+
+	if (*buf == '"') {
+		buf++;
+		if((e = strchr(buf, '"'))) {
+			buf = e+1;
+		}
+	}
+
+	while(*buf == ' ') {
+		buf++;
+	}
+
+	if ((url = strchr(buf, '<')) && (e = switch_find_end_paren(url, '<', '>'))) {
 		url++;
 		if (to_dup) {
 			url = strdup(url);
@@ -6092,11 +6107,11 @@ int sofia_glue_init_sql(sofia_profile_t *profile)
 	}
 		
 
-	test_sql = switch_mprintf("delete from sip_registrations where (contact like '%%TCP%%' "
+	test_sql = switch_mprintf("delete from sip_registrations where (sub_host is null or contact like '%%TCP%%' "
 							  "or status like '%%TCP%%' or status like '%%TLS%%') and hostname='%q' "
 							  "and network_ip like '%%' and network_port like '%%' and sip_username "
 							  "like '%%' and mwi_user  like '%%' and mwi_host like '%%' "
-							  "and orig_server_host like '%%' and orig_hostname like '%%' and sub_host like '%%'", mod_sofia_globals.hostname);
+							  "and orig_server_host like '%%' and orig_hostname like '%%'", mod_sofia_globals.hostname);
 
 
 	switch_cache_db_test_reactive(dbh, test_sql, "drop table sip_registrations", reg_sql);
@@ -6258,6 +6273,7 @@ void sofia_glue_actually_execute_sql_trans(sofia_profile_t *profile, char *sql, 
 void sofia_glue_actually_execute_sql(sofia_profile_t *profile, char *sql, switch_mutex_t *mutex)
 {
 	switch_cache_db_handle_t *dbh = NULL;
+	char *err = NULL;
 
 	if (mutex) {
 		switch_mutex_lock(mutex);
@@ -6268,7 +6284,12 @@ void sofia_glue_actually_execute_sql(sofia_profile_t *profile, char *sql, switch
 		goto end;
 	}
 
-	switch_cache_db_execute_sql(dbh, sql, NULL);
+	switch_cache_db_execute_sql(dbh, sql, &err);
+
+	if (err) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "SQL ERR: [%s]\n%s\n", err, sql);
+		free(err);
+	}
 
  end:
 
@@ -6316,7 +6337,7 @@ switch_bool_t sofia_glue_execute_sql_callback(sofia_profile_t *profile,
 char *sofia_glue_execute_sql2str(sofia_profile_t *profile, switch_mutex_t *mutex, char *sql, char *resbuf, size_t len)
 {
 	char *ret = NULL;
-
+	char *err = NULL;
 	switch_cache_db_handle_t *dbh = NULL;
 
 	if (!(dbh = sofia_glue_get_db_handle(profile))) {
@@ -6328,7 +6349,12 @@ char *sofia_glue_execute_sql2str(sofia_profile_t *profile, switch_mutex_t *mutex
 		switch_mutex_lock(mutex);
 	}
 
-	ret = switch_cache_db_execute_sql2str(dbh, sql, resbuf, len, NULL);
+	ret = switch_cache_db_execute_sql2str(dbh, sql, resbuf, len, &err);
+
+	if (err) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "SQL ERR: [%s]\n%s\n", err, sql);
+		free(err);
+	}
 
 	if (mutex) {
 		switch_mutex_unlock(mutex);
@@ -6504,9 +6530,14 @@ switch_status_t sofia_glue_send_notify(sofia_profile_t *profile, const char *use
 	nua_handle_t *nh;
 	sofia_destination_t *dst = NULL;
 	char *contact_str, *contact, *user_via = NULL;
-	char *route_uri = NULL;
+	char *route_uri = NULL, *p;
 
 	contact = sofia_glue_get_url_from_contact((char *) o_contact, 1);
+
+	if ((p = strstr(contact, ";fs_"))) {
+		*p = '\0';
+	}
+
 	if (!zstr(network_ip) && sofia_glue_check_nat(profile, network_ip)) {
 		char *ptr = NULL;
 		//const char *transport_str = NULL;
@@ -6554,6 +6585,7 @@ switch_status_t sofia_glue_send_notify(sofia_profile_t *profile, const char *use
 			   NUTAG_NEWSUB(1),
 			   TAG_IF(dst->route_uri, NUTAG_PROXY(route_uri)), TAG_IF(dst->route, SIPTAG_ROUTE_STR(dst->route)),
 			   TAG_IF(user_via, SIPTAG_VIA_STR(user_via)),
+			   SIPTAG_SUBSCRIPTION_STATE_STR("terminated;reason=noresource"),
 			   TAG_IF(event, SIPTAG_EVENT_STR(event)),
 			   TAG_IF(contenttype, SIPTAG_CONTENT_TYPE_STR(contenttype)), TAG_IF(body, SIPTAG_PAYLOAD_STR(body)), TAG_END());
 
@@ -6743,7 +6775,7 @@ void sofia_glue_parse_rtp_bugs(switch_rtp_bug_flag_t *flag_pole, const char *str
 	}
 }
 
-char *sofia_glue_gen_contact_str(sofia_profile_t *profile, sip_t const *sip, sofia_dispatch_event_t *de, sofia_nat_parse_t *np)
+char *sofia_glue_gen_contact_str(sofia_profile_t *profile, sip_t const *sip, nua_handle_t *nh, sofia_dispatch_event_t *de, sofia_nat_parse_t *np)
 {
 	char *contact_str = NULL;
 	const char *contact_host;//, *contact_user;
@@ -6836,33 +6868,68 @@ char *sofia_glue_gen_contact_str(sofia_profile_t *profile, sip_t const *sip, sof
 		np->is_nat = NULL;
 	}
 
-	if (zstr(contact_host)) {
-		np->is_nat = "No contact host";
-	}
+	if (np->is_nat && np->fs_path) {
+		char *full_contact = sip_header_as_string(nh->nh_home, (void *) contact);
+		char *full_contact_dup;
+		char *path_encoded;
+		int path_encoded_len;
+		char *path_val;
+		const char *tp;
 
-	if (np->is_nat) {
-		contact_host = np->network_ip;
-		switch_snprintf(new_port, sizeof(new_port), ":%d", np->network_port);
-		port = NULL;
-	}
+		full_contact_dup = sofia_glue_get_url_from_contact(full_contact, 1);
 
+		if ((tp = switch_stristr("transport=", full_contact_dup))) {
+			tp += 10;
+		}
+		
+		if (zstr(tp)) {
+			tp = "udp";
+		}
 
-	if (port) {
-		switch_snprintf(new_port, sizeof(new_port), ":%s", port);
-	}
+		path_val = switch_mprintf("sip:%s:%d;transport=%s", np->network_ip, np->network_port, tp);
+		path_encoded_len = (int)(strlen(path_val) * 3) + 1;
 
-	ipv6 = strchr(contact_host, ':');
-	if (contact->m_url->url_params) {
-		contact_str = switch_mprintf("%s <sip:%s@%s%s%s%s;%s>%s",
-									 display, contact->m_url->url_user,
-									 ipv6 ? "[" : "",
-									 contact_host, ipv6 ? "]" : "", new_port, contact->m_url->url_params, np->is_nat ? ";fs_nat=yes" : "");
+		switch_zmalloc(path_encoded, path_encoded_len);
+		switch_copy_string(path_encoded, ";fs_path=", 10);
+		switch_url_encode(path_val, path_encoded + 9, path_encoded_len - 9);
+		
+		contact_str = switch_mprintf("%s <%s;fs_nat=yes%s>", display, full_contact_dup, path_encoded);
+
+		free(full_contact_dup);
+		free(path_encoded);
+		free(path_val);
+
 	} else {
-		contact_str = switch_mprintf("%s <sip:%s@%s%s%s%s>%s",
-									 display,
-									 contact->m_url->url_user, ipv6 ? "[" : "", contact_host, ipv6 ? "]" : "", new_port, np->is_nat ? ";fs_nat=yes" : "");
-	}
 
+		if (zstr(contact_host)) {
+			np->is_nat = "No contact host";
+		}
+		
+		if (np->is_nat) {
+			contact_host = np->network_ip;
+			switch_snprintf(new_port, sizeof(new_port), ":%d", np->network_port);
+			port = NULL;
+		}
+		
+		
+		if (port) {
+			switch_snprintf(new_port, sizeof(new_port), ":%s", port);
+		}
+		
+		ipv6 = strchr(contact_host, ':');
+		
+
+		if (contact->m_url->url_params) {
+			contact_str = switch_mprintf("%s <sip:%s@%s%s%s%s;%s>%s",
+										 display, contact->m_url->url_user,
+										 ipv6 ? "[" : "",
+										 contact_host, ipv6 ? "]" : "", new_port, contact->m_url->url_params, np->is_nat ? ";fs_nat=yes" : "");
+		} else {
+			contact_str = switch_mprintf("%s <sip:%s@%s%s%s%s>%s",
+										 display,
+										 contact->m_url->url_user, ipv6 ? "[" : "", contact_host, ipv6 ? "]" : "", new_port, np->is_nat ? ";fs_nat=yes" : "");
+		}
+	}
 		
 	return contact_str;
 }

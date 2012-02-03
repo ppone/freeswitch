@@ -1188,7 +1188,7 @@ FT_DECLARE(ftdm_status_t) ftdm_channel_read_event(ftdm_channel_t *ftdmchan, ftdm
 	ftdm_channel_lock(ftdmchan);
 
 	if (!span->fio->channel_next_event) {
-		ftdm_log(FTDM_LOG_ERROR, "channel_next_event method not implemented in module %s!", span->fio->name);
+		ftdm_log(FTDM_LOG_ERROR, "channel_next_event method not implemented in module %s!\n", span->fio->name);
 		status = FTDM_NOTIMPL;
 		goto done;
 	}
@@ -2548,7 +2548,9 @@ FT_DECLARE(ftdm_status_t) _ftdm_call_place(const char *file, const char *func, i
 		goto done;
 	}
 
+	/* let the user know which channel was picked and which call id was generated */
 	caller_data->fchan = fchan;
+	caller_data->call_id = fchan->caller_data.call_id;
 done:
 	ftdm_channel_unlock(fchan);
 

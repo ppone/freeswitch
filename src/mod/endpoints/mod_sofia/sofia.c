@@ -91,7 +91,7 @@ void sofia_handle_sip_r_notify(switch_core_session_t *session, int status,
 	if (status >= 300 && sip && sip->sip_call_id && (!sofia_private || !sofia_private->is_call)) {
 		char *sql;
 
-		sql = switch_mprintf("update sip_subscriptions set expires=%ld where call_id='%q'", (long) switch_epoch_time_now(NULL), sip->sip_call_id->i_id);
+		sql = switch_mprintf("delete from sip_subscriptions where call_id='%q'", sip->sip_call_id->i_id);
 		switch_assert(sql != NULL);
 		sofia_glue_execute_sql(profile, &sql, SWITCH_TRUE);
 		nua_handle_destroy(nh);
@@ -239,21 +239,25 @@ static void extract_header_vars(sofia_profile_t *profile, sip_t const *sip,
 			switch_stream_handle_t stream = { 0 };
 			int x = 0;
 
-			if (switch_channel_direction(channel) == SWITCH_CALL_DIRECTION_OUTBOUND) {
-				SWITCH_STANDARD_STREAM(stream);
+			SWITCH_STANDARD_STREAM(stream);
 				
-				for(vp = sip->sip_via; vp; vp = vp->v_next) {
-					char *v = sip_header_as_string(nh->nh_home, (void *) vp);
-					
-					stream.write_function(&stream, x == 0 ? "%s" : ",%s", v);
-					su_free(nh->nh_home, v);
-					
-					x++;
-				}
+			for(vp = sip->sip_via; vp; vp = vp->v_next) {
+				char *v = sip_header_as_string(nh->nh_home, (void *) vp);
 				
-				switch_channel_set_variable(channel, "sip_recover_via", (char *)stream.data);
-				free(stream.data);
+				stream.write_function(&stream, x == 0 ? "%s" : ",%s", v);
+				su_free(nh->nh_home, v);
+				
+				x++;
 			}
+			
+			switch_channel_set_variable(channel, "sip_full_via", (char *)stream.data);
+
+			if (switch_channel_direction(channel) == SWITCH_CALL_DIRECTION_OUTBOUND) {
+				switch_channel_set_variable(channel, "sip_recover_via", (char *)stream.data);
+			}
+
+			free(stream.data);
+			
 		}
 		
 		if (sip->sip_from) {
@@ -563,8 +567,9 @@ void sofia_handle_sip_i_bye(switch_core_session_t *session, int status,
 	char st[80] = "";
 #endif
 
-	if (!session)
+	if (!session) {
 		return;
+	}
 
 	channel = switch_core_session_get_channel(session);
 	tech_pvt = switch_core_session_get_private(session);
@@ -2021,10 +2026,6 @@ void *SWITCH_THREAD_FUNC sofia_profile_thread_run(switch_thread_t *thread, void 
 
 	sofia_glue_add_profile(profile->name, profile);
 
-	if (profile->pres_type) {
-		sofia_presence_establish_presence(profile);
-	}
-	
 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Starting thread for %s\n", profile->name);
 
 	profile->started = switch_epoch_time_now(NULL);
@@ -2332,13 +2333,14 @@ static void parse_gateways(sofia_profile_t *profile, switch_xml_t gateways_tag)
 				*caller_id_in_from = "false",
 				*extension = NULL,
 				*proxy = NULL,
+				*options_user_agent = NULL,
 				*context = profile->context,
 				*expire_seconds = "3600",
 				*retry_seconds = "30",
 				*timeout_seconds = "60",
 				*from_user = "", *from_domain = NULL, *outbound_proxy = NULL, *register_proxy = NULL, *contact_host = NULL,
-				*contact_params = NULL, *params = NULL, *register_transport = NULL,
-				*reg_id = NULL, *str_rfc_5626 = NULL;
+				*contact_params = "", *params = NULL, *register_transport = NULL,
+				*reg_id = NULL, *str_rfc_5626 = "";
 
 			if (!context) {
 				context = "default";
@@ -2437,6 +2439,8 @@ static void parse_gateways(sofia_profile_t *profile, switch_xml_t gateways_tag)
 					ping_max = atoi(val);
 				} else if (!strcmp(var, "ping-min")) {
 					ping_min = atoi(val);
+				} else if (!strcmp(var, "ping-user-agent")) {
+					options_user_agent = val;
 				} else if (!strcmp(var, "proxy")) {
 					proxy = val;
 				} else if (!strcmp(var, "context")) {
@@ -2488,16 +2492,6 @@ static void parse_gateways(sofia_profile_t *profile, switch_xml_t gateways_tag)
 				str_rfc_5626 = switch_core_sprintf(gateway->pool, ";reg-id=%s;+sip.instance=\"<urn:uuid:%s>\"",reg_id,str_guid);
 			}
 
-			if (ping_freq) {
-				if (ping_freq >= 5) {
-					gateway->ping_freq = ping_freq;
-					gateway->ping_max = ping_max;
-					gateway->ping_min = ping_min;
-					gateway->ping = switch_epoch_time_now(NULL) + ping_freq;
-				} else {
-					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "ERROR: invalid ping!\n");
-				}
-			}
 
 			if ((gw_subs_tag = switch_xml_child(gateway_tag, "subscriptions"))) {
 				parse_gateway_subscriptions(profile, gateway, gw_subs_tag);
@@ -2520,6 +2514,14 @@ static void parse_gateways(sofia_profile_t *profile, switch_xml_t gateways_tag)
 				if (zstr(password)) {
 					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "ERROR: password param is REQUIRED!\n");
 					goto skip;
+				}
+			} else {
+				if (zstr(username)) {
+					username = "FreeSWITCH";
+				}
+
+				if (zstr(password)) {
+					password = "";
 				}
 			}
 
@@ -2580,6 +2582,7 @@ static void parse_gateways(sofia_profile_t *profile, switch_xml_t gateways_tag)
 			gateway->auth_username = switch_core_strdup(gateway->pool, auth_username);
 			gateway->register_password = switch_core_strdup(gateway->pool, password);
 			gateway->distinct_to = distinct_to;
+			gateway->options_user_agent = options_user_agent;
 
 			if (switch_true(caller_id_in_from)) {
 				sofia_set_flag(gateway, REG_FLAG_CALLERID);
@@ -2610,6 +2613,21 @@ static void parse_gateways(sofia_profile_t *profile, switch_xml_t gateways_tag)
 			gateway->register_from = switch_core_sprintf(gateway->pool, "<sip:%s@%s;transport=%s>",
 														 from_user, !zstr(from_domain) ? from_domain : proxy, register_transport);
 
+
+			if (ping_freq) {
+				if (ping_freq >= 5) {
+					gateway->ping_freq = ping_freq;
+					gateway->ping_max = ping_max;
+					gateway->ping_min = ping_min;
+					gateway->ping = switch_epoch_time_now(NULL) + ping_freq;
+					gateway->options_to_uri = switch_core_sprintf(gateway->pool, "<sip:%s;transport=%s>",
+															   !zstr(from_domain) ? from_domain : proxy, register_transport);
+					gateway->options_from_uri = switch_core_sprintf(gateway->pool, "<sip:%s;transport=%s>",
+																	profile->extrtpip ? profile->extrtpip : profile->sipip, register_transport);			
+				} else {
+					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "ERROR: invalid ping!\n");
+				}
+			}
 
 			if (contact_host) {
 				if (!strcmp(contact_host, "sip-ip")) {
@@ -2661,11 +2679,11 @@ static void parse_gateways(sofia_profile_t *profile, switch_xml_t gateways_tag)
 							profile->tls_sip_port : profile->sip_port, params, str_rfc_5626);
 
 				} else {
-					format = strchr(sipip, ':') ? "<sip:%s@[%s]:%d%s>" : "<sip:%s@%s:%d%s%s>";
+					format = strchr(sipip, ':') ? "<sip:%s@[%s]:%d%s>" : "<sip:%s@%s:%d%s>";
 					gateway->register_contact = switch_core_sprintf(gateway->pool, format, extension,
 							sipip,
 							sofia_glue_transport_has_tls(gateway->register_transport) ?
-							profile->tls_sip_port : profile->sip_port, params,contact_params);
+							profile->tls_sip_port : profile->sip_port, params);
 				}
 			} else {
 				if (rfc_5626) {
@@ -3342,7 +3360,7 @@ switch_status_t reconfig_sofia(sofia_profile_t *profile)
 					} else if (!strcasecmp(var, "context")) {
 						profile->context = switch_core_strdup(profile->pool, val);
 					} else if (!strcasecmp(var, "local-network-acl")) {
-						if (!strcasecmp(var, "none")) {
+						if (!strcasecmp(val, "none")) {
 							profile->local_network = NULL;
 						} else {
 							profile->local_network = switch_core_strdup(profile->pool, val);
@@ -3439,14 +3457,14 @@ switch_status_t reconfig_sofia(sofia_profile_t *profile)
                                                         sofia_clear_pflag(profile, PFLAG_OPTIONS_RESPOND_503_ON_BUSY);
                                                 }
 					} else if (!strcasecmp(var, "sip-force-expires")) {
-						uint32_t sip_force_expires = atoi(val);
+						int32_t sip_force_expires = atoi(val);
 						if (sip_force_expires >= 0) {
 							profile->sip_force_expires = sip_force_expires;
 						} else {
 							profile->sip_force_expires = 0;
 						}
 					} else if (!strcasecmp(var, "sip-expires-max-deviation")) {
-						uint32_t sip_expires_max_deviation = atoi(val);
+						int32_t sip_expires_max_deviation = atoi(val);
 						if (sip_expires_max_deviation >= 0) {
 							profile->sip_expires_max_deviation = sip_expires_max_deviation;
 						} else {
@@ -3689,7 +3707,7 @@ switch_status_t config_sofia(int reload, char *profile_name)
 				profile->contact_user = SOFIA_DEFAULT_CONTACT_USER;
 				sofia_set_pflag(profile, PFLAG_PASS_CALLEE_ID);
 				sofia_set_pflag(profile, PFLAG_MESSAGE_QUERY_ON_FIRST_REGISTER);
-				sofia_set_pflag(profile, PFLAG_PRESENCE_ON_FIRST_REGISTER);
+				//sofia_set_pflag(profile, PFLAG_PRESENCE_ON_FIRST_REGISTER);		
 				sofia_set_pflag(profile, PFLAG_SQL_IN_TRANS);
 
 				profile->shutdown_type = "false";
@@ -4500,14 +4518,14 @@ switch_status_t config_sofia(int reload, char *profile_name)
                                                         sofia_clear_pflag(profile, PFLAG_OPTIONS_RESPOND_503_ON_BUSY);
                                                 }
 					} else if (!strcasecmp(var, "sip-force-expires")) {
-						uint32_t sip_force_expires = atoi(val);
+						int32_t sip_force_expires = atoi(val);
 						if (sip_force_expires >= 0) {
 							profile->sip_force_expires = sip_force_expires;
 						} else {
 							profile->sip_force_expires = 0;
 						}
 					} else if (!strcasecmp(var, "sip-expires-max-deviation")) {
-						uint32_t sip_expires_max_deviation = atoi(val);
+						int32_t sip_expires_max_deviation = atoi(val);
 						if (sip_expires_max_deviation >= 0) {
 							profile->sip_expires_max_deviation = sip_expires_max_deviation;
 						} else {
@@ -5182,8 +5200,8 @@ static void sofia_handle_sip_r_invite(switch_core_session_t *session, int status
 				astate = "confirmed";
 			}
 
-			if (!switch_channel_test_flag(channel, CF_EARLY_MEDIA) && !switch_channel_test_flag(channel, CF_ANSWERED) &&
-				!switch_channel_test_flag(channel, CF_RING_READY)) {
+			if ((!switch_channel_test_flag(channel, CF_EARLY_MEDIA) && !switch_channel_test_flag(channel, CF_ANSWERED) &&
+				 !switch_channel_test_flag(channel, CF_RING_READY)) || sofia_test_flag(tech_pvt, TFLAG_RECOVERING)) {
 				const char *from_user = "", *from_host = "", *to_user = "", *to_host = "", *contact_user = "", *contact_host = "";
 				const char *user_agent = "", *call_id = "";
 				const char *to_tag = "";
@@ -5550,7 +5568,7 @@ static void sofia_handle_sip_i_state(switch_core_session_t *session, int status,
 		const char *val;
 		if ((val = switch_channel_get_variable(channel, "sip_auto_answer")) && switch_true(val)) {
 			nua_notify(nh, NUTAG_NEWSUB(1), NUTAG_WITH_THIS_MSG(de->data->e_msg), 
-					   NUTAG_SUBSTATE(nua_substate_terminated), SIPTAG_EVENT_STR("talk"), TAG_END());
+					   NUTAG_SUBSTATE(nua_substate_terminated),SIPTAG_SUBSCRIPTION_STATE_STR("terminated;reason=noresource"), SIPTAG_EVENT_STR("talk"), TAG_END());
 		}
 	}
 
@@ -5805,7 +5823,7 @@ static void sofia_handle_sip_i_state(switch_core_session_t *session, int status,
 						sofia_set_flag_locked(tech_pvt, TFLAG_3PCC);
 						//sofia_glue_tech_choose_port(tech_pvt, 0);
 						//sofia_glue_set_local_sdp(tech_pvt, NULL, 0, NULL, 0);
-						switch_channel_set_flag(channel, TFLAG_LATE_NEGOTIATION);
+						sofia_set_flag(tech_pvt, TFLAG_LATE_NEGOTIATION);
 						//Moves into CS_INIT so call moves forward into the dialplan
 						switch_channel_set_state(channel, CS_INIT);
 					} else {
@@ -6032,7 +6050,7 @@ static void sofia_handle_sip_i_state(switch_core_session_t *session, int status,
 			}
 		break;
 	case nua_callstate_ready:
-		if (r_sdp && !is_dup_sdp && switch_rtp_ready(tech_pvt->rtp_session)) {
+		if (r_sdp && !is_dup_sdp && switch_rtp_ready(tech_pvt->rtp_session) && !sofia_test_flag(tech_pvt, TFLAG_NOSDP_REINVITE)) {
 			/* sdp changed since 18X w sdp, we're supposed to ignore it but we, of course, were pressured into supporting it */
 			uint8_t match = 0;
 
@@ -6326,7 +6344,6 @@ void *SWITCH_THREAD_FUNC nightmare_xfer_thread_run(switch_thread_t *thread, void
 					mark_transfer_record(session, nhelper->bridge_to_uuid, tuuid_str);
 					switch_ivr_uuid_bridge(nhelper->bridge_to_uuid, tuuid_str);
 					switch_channel_set_variable(channel_a, SWITCH_ENDPOINT_DISPOSITION_VARIABLE, "ATTENDED_TRANSFER");
-					sofia_set_flag_locked(tech_pvt, TFLAG_BYE);
 				} else {
 					switch_channel_hangup(switch_core_session_get_channel(tsession), SWITCH_CAUSE_ORIGINATOR_CANCEL);
 					status = SWITCH_STATUS_FALSE;
@@ -6341,7 +6358,7 @@ void *SWITCH_THREAD_FUNC nightmare_xfer_thread_run(switch_thread_t *thread, void
 			}
 
 			nua_notify(tech_pvt->nh, NUTAG_NEWSUB(1), SIPTAG_CONTENT_TYPE_STR("message/sipfrag"),
-					   NUTAG_SUBSTATE(nua_substate_terminated),
+					   NUTAG_SUBSTATE(nua_substate_terminated),SIPTAG_SUBSCRIPTION_STATE_STR("terminated;reason=noresource"),
 					   SIPTAG_PAYLOAD_STR(status == SWITCH_STATUS_SUCCESS ? "SIP/2.0 200 OK\r\n" :
 										  "SIP/2.0 403 Forbidden\r\n"), SIPTAG_EVENT_STR(nhelper->event), TAG_END());
 
@@ -6572,7 +6589,7 @@ void sofia_handle_sip_i_refer(nua_t *nua, sofia_profile_t *profile, nua_handle_t
 							switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, "Denying Attended Transfer, variable [deny_refer_requests] was set to true\n");
 
 							nua_notify(tech_pvt->nh, NUTAG_NEWSUB(1), SIPTAG_CONTENT_TYPE_STR("message/sipfrag;version=2.0"),
-								NUTAG_SUBSTATE(nua_substate_terminated),
+								NUTAG_SUBSTATE(nua_substate_terminated),SIPTAG_SUBSCRIPTION_STATE_STR("terminated;reason=noresource"),
 								SIPTAG_PAYLOAD_STR("SIP/2.0 403 Forbidden\r\n"), SIPTAG_EVENT_STR(etmp), TAG_END());
 
 						} else if (switch_channel_test_flag(channel_b, CF_ORIGINATOR)) {
@@ -6627,7 +6644,7 @@ void sofia_handle_sip_i_refer(nua_t *nua, sofia_profile_t *profile, nua_handle_t
 								switch_core_session_rwunlock(a_session);
 
 								nua_notify(tech_pvt->nh, NUTAG_NEWSUB(1), SIPTAG_CONTENT_TYPE_STR("message/sipfrag;version=2.0"),
-										   NUTAG_SUBSTATE(nua_substate_terminated), SIPTAG_PAYLOAD_STR("SIP/2.0 200 OK\r\n"), SIPTAG_EVENT_STR(etmp),
+										   NUTAG_SUBSTATE(nua_substate_terminated),SIPTAG_SUBSCRIPTION_STATE_STR("terminated;reason=noresource"), SIPTAG_PAYLOAD_STR("SIP/2.0 200 OK\r\n"), SIPTAG_EVENT_STR(etmp),
 										   TAG_END());
 
 								if (b_tech_pvt && !sofia_test_flag(b_tech_pvt, TFLAG_BYE)) {
@@ -6646,7 +6663,7 @@ void sofia_handle_sip_i_refer(nua_t *nua, sofia_profile_t *profile, nua_handle_t
 								}
 							} else {
 								nua_notify(tech_pvt->nh, NUTAG_NEWSUB(1), SIPTAG_CONTENT_TYPE_STR("message/sipfrag;version=2.0"),
-										   NUTAG_SUBSTATE(nua_substate_terminated),
+										   NUTAG_SUBSTATE(nua_substate_terminated),SIPTAG_SUBSCRIPTION_STATE_STR("terminated;reason=noresource"),
 										   SIPTAG_PAYLOAD_STR("SIP/2.0 403 Forbidden\r\n"), SIPTAG_EVENT_STR(etmp), TAG_END());
 							}
 
@@ -6693,7 +6710,7 @@ void sofia_handle_sip_i_refer(nua_t *nua, sofia_profile_t *profile, nua_handle_t
 							switch_ivr_uuid_bridge(br_b, br_a);
 							switch_channel_set_variable(channel_b, SWITCH_ENDPOINT_DISPOSITION_VARIABLE, "ATTENDED_TRANSFER");
 							nua_notify(tech_pvt->nh, NUTAG_NEWSUB(1), SIPTAG_CONTENT_TYPE_STR("message/sipfrag;version=2.0"),
-									   NUTAG_SUBSTATE(nua_substate_terminated), SIPTAG_PAYLOAD_STR("SIP/2.0 200 OK\r\n"), SIPTAG_EVENT_STR(etmp),
+									   NUTAG_SUBSTATE(nua_substate_terminated),SIPTAG_SUBSCRIPTION_STATE_STR("terminated;reason=noresource"), SIPTAG_PAYLOAD_STR("SIP/2.0 200 OK\r\n"), SIPTAG_EVENT_STR(etmp),
 									   TAG_END());
 
 							sofia_clear_flag_locked(b_tech_pvt, TFLAG_SIP_HOLD);
@@ -6707,7 +6724,7 @@ void sofia_handle_sip_i_refer(nua_t *nua, sofia_profile_t *profile, nua_handle_t
 								switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
 												  "Cannot transfer channels that are not in a bridge.\n");
 								nua_notify(tech_pvt->nh, NUTAG_NEWSUB(1), SIPTAG_CONTENT_TYPE_STR("message/sipfrag;version=2.0"),
-										   NUTAG_SUBSTATE(nua_substate_terminated), SIPTAG_PAYLOAD_STR("SIP/2.0 403 Forbidden\r\n"),
+										   NUTAG_SUBSTATE(nua_substate_terminated),SIPTAG_SUBSCRIPTION_STATE_STR("terminated;reason=noresource"), SIPTAG_PAYLOAD_STR("SIP/2.0 403 Forbidden\r\n"),
 										   SIPTAG_EVENT_STR(etmp), TAG_END());
 							} else {
 								switch_core_session_t *t_session, *hup_session;
@@ -6757,14 +6774,14 @@ void sofia_handle_sip_i_refer(nua_t *nua, sofia_profile_t *profile, nua_handle_t
 									nua_notify(tech_pvt->nh,
 											   NUTAG_NEWSUB(1),
 											   SIPTAG_CONTENT_TYPE_STR("message/sipfrag;version=2.0"),
-											   NUTAG_SUBSTATE(nua_substate_terminated),
+											   NUTAG_SUBSTATE(nua_substate_terminated),SIPTAG_SUBSCRIPTION_STATE_STR("terminated;reason=noresource"),
 											   SIPTAG_PAYLOAD_STR("SIP/2.0 200 OK\r\n"), SIPTAG_EVENT_STR(etmp), TAG_END());
 									switch_core_session_rwunlock(t_session);
 									switch_channel_hangup(hup_channel, SWITCH_CAUSE_ATTENDED_TRANSFER);
 								} else {
 									switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "Session to transfer to not found.\n");
 									nua_notify(tech_pvt->nh, NUTAG_NEWSUB(1), SIPTAG_CONTENT_TYPE_STR("message/sipfrag;version=2.0"),
-											   NUTAG_SUBSTATE(nua_substate_terminated),
+											   NUTAG_SUBSTATE(nua_substate_terminated),SIPTAG_SUBSCRIPTION_STATE_STR("terminated;reason=noresource"),
 											   SIPTAG_PAYLOAD_STR("SIP/2.0 403 Forbidden\r\n"), SIPTAG_EVENT_STR(etmp), TAG_END());
 								}
 							}
@@ -6878,7 +6895,7 @@ void sofia_handle_sip_i_refer(nua_t *nua, sofia_profile_t *profile, nua_handle_t
 						switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Invalid Transfer! [%s]\n", br_a);
 						switch_channel_set_variable(channel_a, SWITCH_ENDPOINT_DISPOSITION_VARIABLE, "ATTENDED_TRANSFER_ERROR");
 						nua_notify(tech_pvt->nh, NUTAG_NEWSUB(1), SIPTAG_CONTENT_TYPE_STR("message/sipfrag;version=2.0"),
-								   NUTAG_SUBSTATE(nua_substate_terminated), SIPTAG_PAYLOAD_STR("SIP/2.0 403 Forbidden\r\n"), SIPTAG_EVENT_STR(etmp),
+								   NUTAG_SUBSTATE(nua_substate_terminated),SIPTAG_SUBSCRIPTION_STATE_STR("terminated;reason=noresource"), SIPTAG_PAYLOAD_STR("SIP/2.0 403 Forbidden\r\n"), SIPTAG_EVENT_STR(etmp),
 								   TAG_END());
 					}
 				}
@@ -6920,13 +6937,13 @@ void sofia_handle_sip_i_refer(nua_t *nua, sofia_profile_t *profile, nua_handle_t
 
 			switch_channel_set_variable(channel, SWITCH_ENDPOINT_DISPOSITION_VARIABLE, "BLIND_TRANSFER");
 			nua_notify(tech_pvt->nh, NUTAG_NEWSUB(1), SIPTAG_CONTENT_TYPE_STR("message/sipfrag;version=2.0"),
-					   NUTAG_SUBSTATE(nua_substate_terminated), SIPTAG_PAYLOAD_STR("SIP/2.0 200 OK\r\n"), SIPTAG_EVENT_STR(etmp), TAG_END());
+					   NUTAG_SUBSTATE(nua_substate_terminated),SIPTAG_SUBSCRIPTION_STATE_STR("terminated;reason=noresource"), SIPTAG_PAYLOAD_STR("SIP/2.0 200 OK\r\n"), SIPTAG_EVENT_STR(etmp), TAG_END());
 
 		} else {
 			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Cannot Blind Transfer 1 Legged calls\n");
 			switch_channel_set_variable(channel_a, SWITCH_ENDPOINT_DISPOSITION_VARIABLE, "ATTENDED_TRANSFER_ERROR");
 			nua_notify(tech_pvt->nh, NUTAG_NEWSUB(1), SIPTAG_CONTENT_TYPE_STR("message/sipfrag;version=2.0"),
-					   NUTAG_SUBSTATE(nua_substate_terminated), SIPTAG_PAYLOAD_STR("SIP/2.0 403 Forbidden\r\n"), SIPTAG_EVENT_STR(etmp), TAG_END());
+					   NUTAG_SUBSTATE(nua_substate_terminated),SIPTAG_SUBSCRIPTION_STATE_STR("terminated;reason=noresource"), SIPTAG_PAYLOAD_STR("SIP/2.0 403 Forbidden\r\n"), SIPTAG_EVENT_STR(etmp), TAG_END());
 		}
 	}
 
@@ -7137,11 +7154,13 @@ void sofia_handle_sip_i_info(nua_t *nua, sofia_profile_t *profile, nua_handle_t 
 			if (!strncasecmp(sip->sip_content_type->c_type, "application", 11) && !strcasecmp(sip->sip_content_type->c_subtype, "media_control+xml")) {
 				switch_core_session_t *other_session;
 				
-				switch_channel_set_flag(channel, CF_VIDEO_REFRESH_REQ);
-
-				if (switch_core_session_get_partner(session, &other_session) == SWITCH_STATUS_SUCCESS) {
-					sofia_glue_build_vid_refresh_message(other_session, sip->sip_payload->pl_data);
-					switch_core_session_rwunlock(other_session);
+				if (switch_channel_test_flag(channel, CF_VIDEO)) {
+					if (switch_core_session_get_partner(session, &other_session) == SWITCH_STATUS_SUCCESS) {
+						sofia_glue_build_vid_refresh_message(other_session, sip->sip_payload->pl_data);
+						switch_core_session_rwunlock(other_session);
+					} else {
+						switch_channel_set_flag(channel, CF_VIDEO_REFRESH_REQ);
+					}
 				}
 
 			} else if (!strncasecmp(sip->sip_content_type->c_type, "application", 11) && !strcasecmp(sip->sip_content_type->c_subtype, "dtmf-relay")) {
@@ -8499,10 +8518,34 @@ void sofia_info_send_sipfrag(switch_core_session_t *aleg, switch_core_session_t 
 			switch_caller_profile_t *acp = a_tech_pvt->caller_profile;
 
 			if (ua && switch_stristr("snom", ua)) {
-				if (zstr(acp->caller_id_name)) {
-					snprintf(message, sizeof(message), "From:\r\nTo: %s\r\n", acp->caller_id_number);
+				const char *ver_str = NULL; 
+				int version = 0;
+
+				ver_str = switch_stristr( "/", ua);
+
+				if ( ver_str ) {
+					char *argv[4] = { 0 };
+					char *dotted = strdup( ver_str + 1 );
+					if ( dotted ) {
+						switch_separate_string(dotted, '.', argv, (sizeof(argv) / sizeof(argv[0])));
+						if ( argv[0] && argv[1] && argv[2] ) {
+							version = ( atoi(argv[0]) * 10000 )  + ( atoi(argv[1]) * 100 ) + atoi(argv[2]);
+						}
+					}
+					switch_safe_free( dotted );
+				}
+				if ( version >= 80424 ) {
+					if (zstr(acp->caller_id_name)) {
+						snprintf(message, sizeof(message), "From: %s\r\nTo:\r\n", acp->caller_id_number);
+					} else {
+						snprintf(message, sizeof(message), "From: \"%s\" %s\r\nTo:\r\n", acp->caller_id_name, acp->caller_id_number);
+					}
 				} else {
-					snprintf(message, sizeof(message), "From:\r\nTo: \"%s\" %s\r\n", acp->caller_id_name, acp->caller_id_number);
+					if (zstr(acp->caller_id_name)) {
+						snprintf(message, sizeof(message), "From:\r\nTo: %s\r\n", acp->caller_id_number);
+					} else {
+						snprintf(message, sizeof(message), "From:\r\nTo: \"%s\" %s\r\n", acp->caller_id_name, acp->caller_id_number);
+					}
 				}
 				nua_info(b_tech_pvt->nh,
 						 SIPTAG_CONTENT_TYPE_STR("message/sipfrag;version=2.0"),

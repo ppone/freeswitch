@@ -454,7 +454,7 @@ switch_status_t sofia_on_hangup(switch_core_session_t *session)
 	}
 
 	if (!((use_my_cause = switch_channel_get_variable(channel, "sip_ignore_remote_cause")) && switch_true(use_my_cause))) {
-		ps_cause = switch_channel_get_variable(channel, SWITCH_PROTO_SPECIFIC_HANGUP_CAUSE_VARIABLE);
+		ps_cause = switch_channel_get_variable(channel, "last_bridge_" SWITCH_PROTO_SPECIFIC_HANGUP_CAUSE_VARIABLE);
 	}
 
 	if (!zstr(ps_cause) && (!strncasecmp(ps_cause, "sip:", 4) || !strncasecmp(ps_cause, "sips:", 5))) {
@@ -1980,7 +1980,8 @@ static switch_status_t sofia_receive_message(switch_core_session_t *session, swi
 				switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, 
 								  "Operation not permitted on an inbound non-answered call leg!\n");
 			} else { 
-				nua_notify(tech_pvt->nh, NUTAG_NEWSUB(1), NUTAG_SUBSTATE(nua_substate_active), SIPTAG_EVENT_STR(event), TAG_END());
+				nua_notify(tech_pvt->nh, NUTAG_NEWSUB(1), NUTAG_SUBSTATE(nua_substate_active), SIPTAG_SUBSCRIPTION_STATE_STR("active"),
+						   SIPTAG_EVENT_STR(event), TAG_END());
 			}
 
 		}
@@ -2096,11 +2097,8 @@ static switch_status_t sofia_receive_message(switch_core_session_t *session, swi
 				if (zstr(number)) {
 					number = tech_pvt->caller_profile->destination_number;
 				}
-
-				if (sofia_test_flag(tech_pvt, TFLAG_UPDATING_DISPLAY)) {
-					switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(tech_pvt->session), SWITCH_LOG_ERROR, 
-									  "Cannot send display update to %s Did not receive reply to last update\n", switch_channel_get_name(tech_pvt->channel));
-				} else {
+				
+				if (!sofia_test_flag(tech_pvt, TFLAG_UPDATING_DISPLAY) && switch_channel_test_flag(channel, CF_ANSWERED)) {
 					if (zstr(tech_pvt->last_sent_callee_id_name) || strcmp(tech_pvt->last_sent_callee_id_name, name) ||
 						zstr(tech_pvt->last_sent_callee_id_number) || strcmp(tech_pvt->last_sent_callee_id_number, number)) {
 
@@ -2145,6 +2143,15 @@ static switch_status_t sofia_receive_message(switch_core_session_t *session, swi
 									   TAG_IF(!zstr_buf(message), SIPTAG_HEADER_STR(message)),
 									   TAG_IF(!zstr(tech_pvt->user_via), SIPTAG_VIA_STR(tech_pvt->user_via)), TAG_END());
 						} else if ((ua && (switch_stristr("cisco/spa50", ua) || switch_stristr("cisco/spa525", ua)))) {
+							snprintf(message, sizeof(message), "P-Asserted-Identity: \"%s\" <sip:%s@%s>", name, number, tech_pvt->profile->sipip);
+
+							sofia_set_flag_locked(tech_pvt, TFLAG_UPDATING_DISPLAY);
+							nua_update(tech_pvt->nh,
+									   NUTAG_SESSION_TIMER(tech_pvt->session_timeout),
+									   NUTAG_SESSION_REFRESHER(tech_pvt->session_refresher),
+									   TAG_IF(!zstr_buf(message), SIPTAG_HEADER_STR(message)),
+									   TAG_IF(!zstr(tech_pvt->user_via), SIPTAG_VIA_STR(tech_pvt->user_via)), TAG_END());
+						} else if ((ua && (switch_stristr("Yealink", ua)))) {
 							snprintf(message, sizeof(message), "P-Asserted-Identity: \"%s\" <sip:%s@%s>", name, number, tech_pvt->profile->sipip);
 
 							sofia_set_flag_locked(tech_pvt, TFLAG_UPDATING_DISPLAY);
@@ -2461,14 +2468,6 @@ static switch_status_t sofia_receive_message(switch_core_session_t *session, swi
 		{
 			switch_ring_ready_t ring_ready_val = msg->numeric_arg;
 
-			if (sofia_test_pflag(tech_pvt->profile, PFLAG_3PCC_PROXY) && sofia_test_flag(tech_pvt, TFLAG_3PCC)) {
-				switch_channel_mark_ring_ready(channel);
-				status = SWITCH_STATUS_SUCCESS;
-				switch_log_printf(SWITCH_CHANNEL_ID_LOG, msg->_file, msg->_func, msg->_line, NULL, SWITCH_LOG_INFO,
-								  "Pretending to send ringing.  Not available for 3pcc calls\n");
-				goto end_lock;
-			}
-
 			if (!switch_channel_test_flag(channel, CF_RING_READY) && !sofia_test_flag(tech_pvt, TFLAG_BYE) &&
 				!switch_channel_test_flag(channel, CF_EARLY_MEDIA) && !switch_channel_test_flag(channel, CF_ANSWERED)) {
 				char *extra_header = sofia_glue_get_extra_headers(channel, SOFIA_SIP_PROGRESS_HEADER_PREFIX);
@@ -2517,14 +2516,6 @@ static switch_status_t sofia_receive_message(switch_core_session_t *session, swi
 			const char *val = NULL;
 			const char *call_info = switch_channel_get_variable(channel, "presence_call_info_full");
 
-			if (sofia_test_pflag(tech_pvt->profile, PFLAG_3PCC_PROXY) && sofia_test_flag(tech_pvt, TFLAG_3PCC)) {
-				sofia_set_flag_locked(tech_pvt, TFLAG_EARLY_MEDIA);
-				switch_channel_mark_pre_answered(channel);
-				status = SWITCH_STATUS_SUCCESS;
-				switch_log_printf(SWITCH_CHANNEL_ID_LOG, msg->_file, msg->_func, msg->_line, NULL, SWITCH_LOG_INFO,
-								  "Pretending to send early media.  Not available for 3pcc calls\n");
-				goto end_lock;
-			}
 
 			if (!sofia_test_flag(tech_pvt, TFLAG_ANS) && !sofia_test_flag(tech_pvt, TFLAG_EARLY_MEDIA)) {
 
@@ -4179,7 +4170,7 @@ SWITCH_STANDARD_API(sofia_function)
 					}
 					
 					if (strstr(argv[2], "sla")) {
-						mod_sofia_globals.debug_sla = 1;
+						mod_sofia_globals.debug_sla = 10;
 						stream->write_function(stream, "+OK Debugging sla\n");
 					}
 					
@@ -4831,7 +4822,7 @@ static int notify_callback(void *pArg, int argc, char **argv, char **columnNames
 	
 	nua_handle_bind(nh, &mod_sofia_globals.destroy_private);
 
-	nua_notify(nh, NUTAG_NEWSUB(1), 
+	nua_notify(nh, NUTAG_NEWSUB(1), SIPTAG_SUBSCRIPTION_STATE_STR("terminated;reason=noresource"),
 			   TAG_IF(dst->route_uri, NUTAG_PROXY(route_uri)), TAG_IF(dst->route, SIPTAG_ROUTE_STR(dst->route)),
 			   SIPTAG_EVENT_STR(es), SIPTAG_CONTENT_TYPE_STR(ct), TAG_IF(!zstr(body), SIPTAG_PAYLOAD_STR(body)), TAG_END());
 	
@@ -4920,7 +4911,7 @@ static void general_event_handler(switch_event_t *event)
 					nua_handle_bind(nh, &mod_sofia_globals.destroy_private);
 					
 					nua_notify(nh,
-							   NUTAG_NEWSUB(1),
+							   NUTAG_NEWSUB(1), SIPTAG_SUBSCRIPTION_STATE_STR("terminated;reason=noresource"),
 							   TAG_IF(dst->route_uri, NUTAG_PROXY(dst->route_uri)), TAG_IF(dst->route, SIPTAG_ROUTE_STR(dst->route)),
 							   SIPTAG_EVENT_STR(es), TAG_IF(ct, SIPTAG_CONTENT_TYPE_STR(ct)), TAG_IF(!zstr(body), SIPTAG_PAYLOAD_STR(body)), TAG_END());
 					
@@ -4941,7 +4932,7 @@ static void general_event_handler(switch_event_t *event)
 				if ((session = switch_core_session_locate(uuid))) {
 					if ((tech_pvt = switch_core_session_get_private(session))) {
 						nua_notify(tech_pvt->nh,
-								   NUTAG_NEWSUB(1),
+								   NUTAG_NEWSUB(1), SIPTAG_SUBSCRIPTION_STATE_STR("terminated;reason=noresource"),
 								   SIPTAG_EVENT_STR(es), SIPTAG_CONTENT_TYPE_STR(ct), TAG_IF(!zstr(body), SIPTAG_PAYLOAD_STR(body)), TAG_END());
 					}
 					switch_core_session_rwunlock(session);
