@@ -1723,7 +1723,8 @@ static switch_status_t sofia_receive_message(switch_core_session_t *session, swi
 			}
 
 
-			if ((var = switch_channel_get_variable(channel, SOFIA_SECURE_MEDIA_VARIABLE)) && switch_true(var)) {
+			if ((var = switch_channel_get_variable(channel, SOFIA_SECURE_MEDIA_VARIABLE)) && 
+				(switch_true(var) || !strcasecmp(var, SWITCH_RTP_CRYPTO_KEY_32) || !strcasecmp(var, SWITCH_RTP_CRYPTO_KEY_80))) {
 				sofia_set_flag_locked(tech_pvt, TFLAG_SECURE);
 			}
 
@@ -1912,13 +1913,18 @@ static switch_status_t sofia_receive_message(switch_core_session_t *session, swi
 		{
 			switch_t38_options_t *t38_options = switch_channel_get_private(tech_pvt->channel, "t38_options");
 
-			sofia_glue_set_image_sdp(tech_pvt, t38_options, msg->numeric_arg);
+			if (t38_options) {
+				sofia_glue_set_image_sdp(tech_pvt, t38_options, msg->numeric_arg);
 
-			if (!switch_channel_test_flag(channel, CF_PROXY_MEDIA)) {
-				switch_channel_set_flag(channel, CF_REQ_MEDIA);
+				if (!switch_channel_test_flag(channel, CF_PROXY_MEDIA)) {
+					switch_channel_set_flag(channel, CF_REQ_MEDIA);
+				}
+				sofia_set_flag_locked(tech_pvt, TFLAG_SENT_UPDATE);
+				sofia_glue_do_invite(session);
+			} else {
+				switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING, "%s Request to send IMAGE on channel with not t38 options.\n", 
+								  switch_channel_get_name(channel));
 			}
-			sofia_set_flag_locked(tech_pvt, TFLAG_SENT_UPDATE);
-			sofia_glue_do_invite(session);
 		}
 		break;
 
@@ -2149,6 +2155,7 @@ static switch_status_t sofia_receive_message(switch_core_session_t *session, swi
 							nua_update(tech_pvt->nh,
 									   NUTAG_SESSION_TIMER(tech_pvt->session_timeout),
 									   NUTAG_SESSION_REFRESHER(tech_pvt->session_refresher),
+									   TAG_IF(!zstr(tech_pvt->route_uri), NUTAG_PROXY(tech_pvt->route_uri)),
 									   TAG_IF(!zstr_buf(message), SIPTAG_HEADER_STR(message)),
 									   TAG_IF(!zstr(tech_pvt->user_via), SIPTAG_VIA_STR(tech_pvt->user_via)), TAG_END());
 						} else if ((ua && (switch_stristr("Yealink", ua)))) {
@@ -2158,6 +2165,7 @@ static switch_status_t sofia_receive_message(switch_core_session_t *session, swi
 							nua_update(tech_pvt->nh,
 									   NUTAG_SESSION_TIMER(tech_pvt->session_timeout),
 									   NUTAG_SESSION_REFRESHER(tech_pvt->session_refresher),
+									   TAG_IF(!zstr(tech_pvt->route_uri), NUTAG_PROXY(tech_pvt->route_uri)),
 									   TAG_IF(!zstr_buf(message), SIPTAG_HEADER_STR(message)),
 									   TAG_IF(!zstr(tech_pvt->user_via), SIPTAG_VIA_STR(tech_pvt->user_via)), TAG_END());
 						}
@@ -4640,8 +4648,8 @@ static switch_call_cause_t sofia_outgoing_channel(switch_core_session_t *session
 		}
 
 		now = switch_epoch_time_now(NULL);
-		sql = switch_mprintf("insert into sip_dialogs (uuid,presence_id,presence_data,profile_name,hostname,rcd) "
-							 "values ('%q', '%q', '%q', '%q', '%q', %ld)", switch_core_session_get_uuid(nsession),
+		sql = switch_mprintf("insert into sip_dialogs (uuid,presence_id,presence_data,profile_name,hostname,rcd,call_info_state) "
+							 "values ('%q', '%q', '%q', '%q', '%q', %ld, '')", switch_core_session_get_uuid(nsession),
 							 switch_str_nil(presence_id), switch_str_nil(presence_data), profile->name, mod_sofia_globals.hostname, (long) now);
 		sofia_glue_actually_execute_sql(profile, sql, profile->ireg_mutex);
 		switch_safe_free(sql);

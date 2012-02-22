@@ -3038,6 +3038,11 @@ SWITCH_STANDARD_APP(audio_bridge_function)
 	} else {
 
 		if (switch_channel_test_flag(caller_channel, CF_PROXY_MODE)) {
+			switch_channel_t *peer_channel = switch_core_session_get_channel(peer_session);
+			if (switch_true(switch_channel_get_variable(caller_channel, SWITCH_BYPASS_MEDIA_AFTER_BRIDGE_VARIABLE)) ||
+				switch_true(switch_channel_get_variable(peer_channel, SWITCH_BYPASS_MEDIA_AFTER_BRIDGE_VARIABLE))) {
+				switch_channel_set_flag(caller_channel, CF_BYPASS_MEDIA_AFTER_BRIDGE);
+			}
 			switch_ivr_signal_bridge(session, peer_session);
 		} else {
 			switch_channel_t *channel = switch_core_session_get_channel(session);
@@ -3313,6 +3318,9 @@ static switch_call_cause_t user_outgoing_channel(switch_core_session_t *session,
 	if (var_event) {
 		switch_event_add_header_string(var_event, SWITCH_STACK_BOTTOM, "dialed_user", user);
 		switch_event_add_header_string(var_event, SWITCH_STACK_BOTTOM, "dialed_domain", domain);
+		if (!strstr(dest, "presence_id=")) {
+			switch_event_add_header(var_event, SWITCH_STACK_BOTTOM, "presence_id", "%s@%s", user, domain);
+		}
 	}
 
 	if (!dest) {
