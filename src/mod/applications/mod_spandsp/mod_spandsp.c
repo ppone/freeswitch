@@ -1,6 +1,6 @@
 /* 
  * FreeSWITCH Modular Media Switching Software Library / Soft-Switch Application
- * Copyright (C) 2005-2011, Anthony Minessale II <anthm@freeswitch.org>
+ * Copyright (C) 2005-2012, Anthony Minessale II <anthm@freeswitch.org>
  *
  * Version: MPL 1.1
  *
@@ -337,7 +337,7 @@ switch_status_t load_configuration(switch_bool_t reload)
     spandsp_globals.timezone = "";
 
 	/* TODO make configuration param */
-	spandsp_globals.tonedebug = 1;
+	spandsp_globals.tonedebug = 0;
 
 	if ((xml = switch_xml_open_cfg("spandsp.conf", &cfg, NULL)) || (xml = switch_xml_open_cfg("fax.conf", &cfg, NULL))) {
         status = SWITCH_STATUS_SUCCESS;

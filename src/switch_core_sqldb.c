@@ -1,6 +1,6 @@
 /* 
  * FreeSWITCH Modular Media Switching Software Library / Soft-Switch Application
- * Copyright (C) 2005-2011, Anthony Minessale II <anthm@freeswitch.org>
+ * Copyright (C) 2005-2012, Anthony Minessale II <anthm@freeswitch.org>
  *
  * Version: MPL 1.1
  *
@@ -34,7 +34,7 @@
 
 #include <switch.h>
 #include "private/switch_core_pvt.h"
-//#define DEBUG_SQL 1
+
 #define SWITCH_SQL_QUEUE_LEN 100000
 #define SWITCH_SQL_QUEUE_PAUSE_LEN 90000
 
@@ -218,7 +218,7 @@ SWITCH_DECLARE(switch_status_t) _switch_core_db_handle(switch_cache_db_handle_t 
 }
 
 
-#define SQL_CACHE_TIMEOUT 120
+#define SQL_CACHE_TIMEOUT 30
 #define SQL_REG_TIMEOUT 15
 
 
@@ -390,7 +390,7 @@ SWITCH_DECLARE(switch_status_t) _switch_cache_db_get_db_handle(switch_cache_db_h
 			{
 
 				if (!switch_odbc_available()) {
-					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "Failure! ODBC NOT AVAILABLE!\n");
+					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "Failure! ODBC NOT AVAILABLE! Can't connect to DSN %s\n", connection_options->odbc_options.dsn);
 					goto end;
 				}
 
@@ -415,7 +415,7 @@ SWITCH_DECLARE(switch_status_t) _switch_cache_db_get_db_handle(switch_cache_db_h
 		}
 
 		if (!db && !odbc_dbh) {
-			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "Failure!\n");
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "Failure to connect to %s %s!\n", db?"SQLITE":"ODBC", db?connection_options->core_db_options.db_path:connection_options->odbc_options.dsn);
 			goto end;
 		}
 
@@ -466,7 +466,12 @@ static switch_status_t switch_cache_db_execute_sql_real(switch_cache_db_handle_t
 		break;
 	case SCDB_TYPE_CORE_DB:
 		{
-			status = switch_core_db_exec(dbh->native_handle.core_db_dbh, sql, NULL, NULL, &errmsg);
+			int ret = switch_core_db_exec(dbh->native_handle.core_db_dbh, sql, NULL, NULL, &errmsg);
+
+			if (ret == SWITCH_CORE_DB_OK) {
+				status = SWITCH_STATUS_SUCCESS;
+			}
+
 			if (errmsg) {
 				switch_strdup(tmp, errmsg);
 				switch_core_db_free(errmsg);
@@ -726,6 +731,14 @@ SWITCH_DECLARE(switch_status_t) switch_cache_db_persistant_execute_trans(switch_
 
 	if (io_mutex) switch_mutex_lock(io_mutex);
 
+	if (!zstr(runtime.core_db_pre_trans_execute)) {
+		switch_cache_db_execute_sql_real(dbh, runtime.core_db_pre_trans_execute, &errmsg);
+		if (errmsg) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "SQL PRE TRANS EXEC %s [%s]\n", runtime.core_db_pre_trans_execute, errmsg);
+			free(errmsg);
+		}
+	}
+
  again:
 
 	while (begin_retries > 0) {
@@ -776,6 +789,15 @@ SWITCH_DECLARE(switch_status_t) switch_cache_db_persistant_execute_trans(switch_
 		break;
 	}
 
+
+	if (!zstr(runtime.core_db_inner_pre_trans_execute)) {
+		switch_cache_db_execute_sql_real(dbh, runtime.core_db_inner_pre_trans_execute, &errmsg);
+		if (errmsg) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "SQL PRE TRANS EXEC %s [%s]\n", runtime.core_db_inner_pre_trans_execute, errmsg);
+			free(errmsg);
+		}
+	}
+
 	while (retries > 0) {
 
 		switch_cache_db_execute_sql(dbh, sql, &errmsg);
@@ -796,6 +818,14 @@ SWITCH_DECLARE(switch_status_t) switch_cache_db_persistant_execute_trans(switch_
 		}
 	}
 
+	if (!zstr(runtime.core_db_inner_post_trans_execute)) {
+		switch_cache_db_execute_sql_real(dbh, runtime.core_db_inner_post_trans_execute, &errmsg);
+		if (errmsg) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "SQL POST TRANS EXEC %s [%s]\n", runtime.core_db_inner_post_trans_execute, errmsg);
+			free(errmsg);
+		}
+	}
+
  done:
 
 	if (runtime.odbc_dbtype == DBTYPE_DEFAULT) {
@@ -803,6 +833,14 @@ SWITCH_DECLARE(switch_status_t) switch_cache_db_persistant_execute_trans(switch_
 	} else {
 		switch_odbc_SQLEndTran(dbh->native_handle.odbc_dbh, 1);
 		switch_odbc_SQLSetAutoCommitAttr(dbh->native_handle.odbc_dbh, 1);
+	}
+
+	if (!zstr(runtime.core_db_post_trans_execute)) {
+		switch_cache_db_execute_sql_real(dbh, runtime.core_db_post_trans_execute, &errmsg);
+		if (errmsg) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "SQL POST TRANS EXEC %s [%s]\n", runtime.core_db_post_trans_execute, errmsg);
+			free(errmsg);
+		}
 	}
 
 	if (io_mutex) switch_mutex_unlock(io_mutex);
@@ -832,7 +870,11 @@ SWITCH_DECLARE(switch_status_t) switch_cache_db_execute_sql_callback(switch_cach
 		break;
 	case SCDB_TYPE_CORE_DB:
 		{
-			status = switch_core_db_exec(dbh->native_handle.core_db_dbh, sql, callback, pdata, &errmsg);
+			int ret = switch_core_db_exec(dbh->native_handle.core_db_dbh, sql, callback, pdata, &errmsg);
+
+			if (ret == SWITCH_CORE_DB_OK || ret == SWITCH_CORE_DB_ABORT) {
+				status = SWITCH_STATUS_SUCCESS;
+			}
 
 			if (errmsg) {
 				dbh->last_used = switch_epoch_time_now(NULL) - (SQL_CACHE_TIMEOUT * 2);
@@ -894,7 +936,7 @@ SWITCH_DECLARE(switch_bool_t) switch_cache_db_test_reactive(switch_cache_db_hand
 						switch_core_db_exec(dbh->native_handle.core_db_dbh, drop_sql, NULL, NULL, &errmsg);
 					}
 					if (errmsg) {
-						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "SQL ERR [%s]\n[%s]\n", errmsg, reactive_sql);
+						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "SQL ERR [%s]\n[%s]\n", errmsg, drop_sql);
 						switch_core_db_free(errmsg);
 						errmsg = NULL;
 					}
@@ -1010,11 +1052,11 @@ static void *SWITCH_THREAD_FUNC switch_core_sql_thread(switch_thread_t *thread, 
 					
 					if (new_mlen < runtime.max_sql_buffer_len) {
 						sql_len = new_mlen;
-#ifdef DEBUG_SQL
-						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, 
-										  "REALLOC %ld %d %d\n", (long int)sql_len, switch_queue_size(sql_manager.sql_queue[0]), 
-										  switch_queue_size(sql_manager.sql_queue[1]));
-#endif
+						if (switch_test_flag((&runtime), SCF_DEBUG_SQL)) {
+							switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, 
+											  "REALLOC %ld %d %d\n", (long int)sql_len, switch_queue_size(sql_manager.sql_queue[0]), 
+											  switch_queue_size(sql_manager.sql_queue[1]));
+						}
 						if (!(tmp = realloc(sqlbuf, sql_len))) {
 							switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "SQL thread ending on mem err\n");
 							abort();
@@ -1022,10 +1064,10 @@ static void *SWITCH_THREAD_FUNC switch_core_sql_thread(switch_thread_t *thread, 
 						}
 						sqlbuf = tmp;
 					} else {
-#ifdef DEBUG_SQL
-						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, 
-										  "SAVE %d %d\n", switch_queue_size(sql_manager.sql_queue[0]), switch_queue_size(sql_manager.sql_queue[1]));
-#endif
+						if (switch_test_flag((&runtime), SCF_DEBUG_SQL)) {
+							switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, 
+											  "SAVE %d %d\n", switch_queue_size(sql_manager.sql_queue[0]), switch_queue_size(sql_manager.sql_queue[1]));
+						}
 						save_sql = sql;
 						sql = NULL;
 						lc = 0;
@@ -1068,16 +1110,16 @@ static void *SWITCH_THREAD_FUNC switch_core_sql_thread(switch_thread_t *thread, 
 		wrote = 0;
 
 		if (trans && iterations && (iterations > target || !lc)) {
-#ifdef DEBUG_SQL
-			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, 
-							  "RUN %d %d %d\n", switch_queue_size(sql_manager.sql_queue[0]), switch_queue_size(sql_manager.sql_queue[1]), iterations);
-#endif
+			if (switch_test_flag((&runtime), SCF_DEBUG_SQL)) {
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, 
+								  "RUN %d %d %d\n", switch_queue_size(sql_manager.sql_queue[0]), switch_queue_size(sql_manager.sql_queue[1]), iterations);
+			}
 			if (switch_cache_db_persistant_execute_trans(sql_manager.event_db, sqlbuf, 1) != SWITCH_STATUS_SUCCESS) {
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "SQL thread unable to commit transaction, records lost!\n");
 			}
-#ifdef DEBUG_SQL
-			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "DONE\n");
-#endif
+			if (switch_test_flag((&runtime), SCF_DEBUG_SQL)) { 
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "DONE\n");
+			}
 
 
 			iterations = 0;
@@ -1129,7 +1171,7 @@ static void *SWITCH_THREAD_FUNC switch_core_sql_thread(switch_thread_t *thread, 
 
 static char *parse_presence_data_cols(switch_event_t *event)
 {
-	char *cols[25] = { 0 };
+	char *cols[128] = { 0 };
 	int col_count = 0;
 	char *data_copy;
 	switch_stream_handle_t stream = { 0 };
@@ -1619,10 +1661,7 @@ static char create_channels_sql[] =
 	"   call_uuid  VARCHAR(256),\n"
 	"   sent_callee_name  VARCHAR(1024),\n"
 	"   sent_callee_num  VARCHAR(256)\n"
-	");\n"
-	"create index chidx1 on channels (hostname);\n"
-	"create index uuindex on channels (uuid);\n"
-	"create index uuindex2 on channels (call_uuid);\n";
+	");\n";
 
 static char create_calls_sql[] =
 	"CREATE TABLE calls (\n"
@@ -1632,11 +1671,7 @@ static char create_calls_sql[] =
 	"   caller_uuid      VARCHAR(256),\n"
 	"   callee_uuid      VARCHAR(256),\n"
 	"   hostname VARCHAR(256)\n"
-	");\n"
-	"create index callsidx1 on calls (hostname);\n"
-	"create index eruuindex on calls (caller_uuid);\n"
-	"create index eeuuindex on calls (callee_uuid);\n"
-	"create index eeuuindex2 on calls (call_uuid);\n";
+	");\n";
 
 static char create_interfaces_sql[] =
 	"CREATE TABLE interfaces (\n"
@@ -1678,9 +1713,10 @@ static char create_registrations_sql[] =
 	"   network_ip VARCHAR(256),\n"
 	"   network_port VARCHAR(256),\n"
 	"   network_proto VARCHAR(256),\n"
-	"   hostname VARCHAR(256)\n"
-	");\n"
-	"create index regindex1 on registrations (reg_user,realm,hostname);\n";
+	"   hostname VARCHAR(256),\n"
+	"   metadata VARCHAR(256)\n"
+	");\n";
+
 	
 
 
@@ -1808,7 +1844,8 @@ static char basic_calls_sql[] =
 
 
 SWITCH_DECLARE(switch_status_t) switch_core_add_registration(const char *user, const char *realm, const char *token, const char *url, uint32_t expires, 
-															 const char *network_ip, const char *network_port, const char *network_proto)
+															 const char *network_ip, const char *network_port, const char *network_proto,
+															 const char *metadata)
 {
 	char *sql;
 
@@ -1825,19 +1862,35 @@ SWITCH_DECLARE(switch_status_t) switch_core_add_registration(const char *user, c
 	}
 
 	switch_queue_push(sql_manager.sql_queue[0], sql);
-	
-	sql = switch_mprintf("insert into registrations (reg_user,realm,token,url,expires,network_ip,network_port,network_proto,hostname) "
-						 "values ('%q','%q','%q','%q',%ld,'%q','%q','%q','%q')",
-						 switch_str_nil(user),
-						 switch_str_nil(realm),
-						 switch_str_nil(token),
-						 switch_str_nil(url),
-						 expires,
-						 switch_str_nil(network_ip),
-						 switch_str_nil(network_port),
-						 switch_str_nil(network_proto),
-						 switch_core_get_switchname()
-						 );
+
+	if ( !zstr(metadata) ) {
+		sql = switch_mprintf("insert into registrations (reg_user,realm,token,url,expires,network_ip,network_port,network_proto,hostname,metadata) "
+							 "values ('%q','%q','%q','%q',%ld,'%q','%q','%q','%q','%q')",
+							 switch_str_nil(user),
+							 switch_str_nil(realm),
+							 switch_str_nil(token),
+							 switch_str_nil(url),
+							 expires,
+							 switch_str_nil(network_ip),
+							 switch_str_nil(network_port),
+							 switch_str_nil(network_proto),
+							 switch_core_get_switchname(),
+							 metadata
+							 );
+	} else {
+		sql = switch_mprintf("insert into registrations (reg_user,realm,token,url,expires,network_ip,network_port,network_proto,hostname) "
+							 "values ('%q','%q','%q','%q',%ld,'%q','%q','%q','%q')",
+							 switch_str_nil(user),
+							 switch_str_nil(realm),
+							 switch_str_nil(token),
+							 switch_str_nil(url),
+							 expires,
+							 switch_str_nil(network_ip),
+							 switch_str_nil(network_port),
+							 switch_str_nil(network_proto),
+							 switch_core_get_switchname()
+							 );
+	}
 
 	
 	switch_queue_push(sql_manager.sql_queue[0], sql);
@@ -1972,6 +2025,8 @@ switch_status_t switch_core_sqldb_start(switch_memory_pool_t *pool, switch_bool_
 	switch_cache_db_test_reactive(dbh, "delete from registrations where reg_user='' or network_proto='tcp' or network_proto='tls'", 
 								  "DROP TABLE registrations", create_registrations_sql);
 
+	switch_cache_db_test_reactive(dbh, "select metadata from registrations", NULL, "ALTER TABLE registrations ADD COLUMN metadata VARCHAR(256)");
+
 
 	switch (dbh->type) {
 	case SCDB_TYPE_ODBC:
@@ -2042,6 +2097,15 @@ switch_status_t switch_core_sqldb_start(switch_memory_pool_t *pool, switch_bool_
 	switch_cache_db_execute_sql(dbh, "create index nat_map_port_proto on nat (port,proto,hostname)", NULL);
 	switch_cache_db_execute_sql(dbh, "create index channels1 on channels(hostname)", NULL);
 	switch_cache_db_execute_sql(dbh, "create index calls1 on calls(hostname)", NULL);
+	switch_cache_db_execute_sql(dbh, "create index chidx1 on channels (hostname)", NULL);
+	switch_cache_db_execute_sql(dbh, "create index uuindex on channels (uuid)", NULL);
+	switch_cache_db_execute_sql(dbh, "create index uuindex2 on channels (call_uuid)", NULL);
+	switch_cache_db_execute_sql(dbh, "create index callsidx1 on calls (hostname)", NULL);
+	switch_cache_db_execute_sql(dbh, "create index eruuindex on calls (caller_uuid)", NULL);
+	switch_cache_db_execute_sql(dbh, "create index eeuuindex on calls (callee_uuid)", NULL);
+	switch_cache_db_execute_sql(dbh, "create index eeuuindex2 on calls (call_uuid)", NULL);
+	switch_cache_db_execute_sql(dbh, "create index regindex1 on registrations (reg_user,realm,hostname)", NULL);
+
 
  skip:
 

@@ -1,6 +1,6 @@
 /* 
  * FreeSWITCH Modular Media Switching Software Library / Soft-Switch Application
- * Copyright (C) 2005-2011, Anthony Minessale II <anthm@freeswitch.org>
+ * Copyright (C) 2005-2012, Anthony Minessale II <anthm@freeswitch.org>
  *
  * Version: MPL 1.1
  *
@@ -93,6 +93,11 @@ void menu_init(vmivr_profile_t *profile, vmivr_menu_t *menu) {
 			}
 		}
 	}
+
+	if (!menu->phrase_params) {
+		switch_event_create(&menu->phrase_params, SWITCH_EVENT_REQUEST_PARAMS);
+	}
+
 end:
 	if (xml)
 		switch_xml_free(xml);

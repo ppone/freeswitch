@@ -1,6 +1,6 @@
 /* 
  * mod_rtmp for FreeSWITCH Modular Media Switching Software Library / Soft-Switch Application
- * Copyright (C) 2011, Barracuda Networks Inc.
+ * Copyright (C) 2011-2012, Barracuda Networks Inc.
  *
  * Version: MPL 1.1
  *
@@ -625,7 +625,7 @@ switch_call_cause_t rtmp_outgoing_channel(switch_core_session_t *session, switch
 	/*switch_channel_mark_pre_answered(channel);*/
 	
 	switch_channel_ring_ready(channel);
-	rtmp_send_incoming_call(*newsession);
+	rtmp_send_incoming_call(*newsession, var_event);
 	
 	switch_channel_set_state(channel, CS_INIT);
 	switch_set_flag_locked(tech_pvt, TFLAG_IO);
@@ -843,7 +843,7 @@ switch_call_cause_t rtmp_session_create_call(rtmp_session_t *rsession, switch_co
 	switch_channel_t *channel;
 	const char *dialplan, *context;
 	
-	if (!(*newsession = switch_core_session_request(rtmp_globals.rtmp_endpoint_interface, SOF_NONE, SWITCH_CALL_DIRECTION_INBOUND, NULL))) {
+	if (!(*newsession = switch_core_session_request(rtmp_globals.rtmp_endpoint_interface, SWITCH_CALL_DIRECTION_INBOUND, SOF_NONE, NULL))) {
 		return SWITCH_CAUSE_DESTINATION_OUT_OF_ORDER;
 	}
 

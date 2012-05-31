@@ -1,6 +1,6 @@
 /* 
  * FreeSWITCH Modular Media Switching Software Library / Soft-Switch Application
- * Copyright (C) 2005-2011, Anthony Minessale II <anthm@freeswitch.org>
+ * Copyright (C) 2005-2012, Anthony Minessale II <anthm@freeswitch.org>
  *
  * Version: MPL 1.1
  *
@@ -26,7 +26,7 @@
  * Anthony Minessale II <anthm@freeswitch.org>
  * Moises Silva <moy@sangoma.com>
  * David Yat Sin <dyatsin@sangoma.com>
- *
+ * Gideon Sadan <gsadan@sangoma.com>
  *
  * mod_freetdm.c -- FreeTDM Endpoint Module
  *
@@ -288,7 +288,7 @@ static void cycle_foreground(ftdm_channel_t *ftdmchan, int flash, const char *bc
 			const char *buuid;
 			tech_pvt = switch_core_session_get_private(session);
 			channel = switch_core_session_get_channel(session);
-			buuid = switch_channel_get_variable(channel, SWITCH_SIGNAL_BOND_VARIABLE);
+			buuid = switch_channel_get_partner_uuid(channel);
 
 			
 			if (tokencnt  == 1 && flash) {
@@ -586,6 +586,7 @@ static switch_status_t channel_on_hangup(switch_core_session_t *session)
 		break;
 	case FTDM_CHAN_TYPE_FXS:
 		{
+			tokencnt = ftdm_channel_get_token_count(tech_pvt->ftdmchan);
 			if (!ftdm_channel_call_check_busy(tech_pvt->ftdmchan) && !ftdm_channel_call_check_done(tech_pvt->ftdmchan)) {
 				if (tokencnt) {
 					cycle_foreground(tech_pvt->ftdmchan, 0, NULL);
@@ -1773,6 +1774,10 @@ ftdm_status_t ftdm_channel_from_event(ftdm_sigmsg_t *sigmsg, switch_core_session
 		switch_channel_set_variable_printf(channel, "sip_h_X-FreeTDM-RDNIS-Plan", "%d", channel_caller_data->rdnis.plan);
 		switch_channel_set_variable_printf(channel, "sip_h_X-FreeTDM-CPC", "%s", ftdm_calling_party_category2str(channel_caller_data->cpc));
 		
+		var_value = ftdm_sigmsg_get_var(sigmsg, "ss7_clg_nadi");
+		if (!ftdm_strlen_zero(var_value)) {
+			switch_channel_set_variable_printf(channel, "sip_h_X-FreeTDM-NADI", "%d", var_value);
+		}
 
 		var_value = ftdm_sigmsg_get_var(sigmsg, "ss7_rdnis_screen_ind");
 		if (!ftdm_strlen_zero(var_value)) {
@@ -1824,8 +1829,19 @@ ftdm_status_t ftdm_channel_from_event(ftdm_sigmsg_t *sigmsg, switch_core_session
 			switch_channel_set_variable_printf(channel, "sip_h_X-FreeTDM-IAM", "%s", var_value);
 		}
 
+		var_value = ftdm_sigmsg_get_var(sigmsg, "ss7_cic");
+		if (!ftdm_strlen_zero(var_value)) {
+			switch_channel_set_variable_printf(channel, "sip_h_X-FreeTDM-CIC", "%s", var_value);
+		}
+
 		switch_channel_set_variable_printf(channel, "sip_h_X-FreeTDM-Screen", "%d", channel_caller_data->screen);
 		switch_channel_set_variable_printf(channel, "sip_h_X-FreeTDM-Presentation", "%d", channel_caller_data->pres);
+		switch_channel_set_variable_printf(channel, "sip_h_X-FreeTDM-CallReference", "%d", channel_caller_data->call_reference);
+
+		var_value = ftdm_sigmsg_get_var(sigmsg, "ss7_opc");
+		if (!ftdm_strlen_zero(var_value)) {
+			switch_channel_set_variable_printf(channel, "sip_h_X-FreeTDM-OPC", "%s", var_value);
+		}
 	}
 
 	/* Add any call variable to the dial plan */
@@ -1870,6 +1886,24 @@ static FIO_SIGNAL_CB_FUNCTION(on_common_signal)
 	spanid = ftdm_channel_get_span_id(sigmsg->channel);
 
 	switch (sigmsg->event_id) {
+
+		case FTDM_SIGEVENT_SMS:
+		{
+			ftdm_caller_data_t *caller_data = ftdm_channel_get_caller_data(sigmsg->channel);
+			ftdm_sms_data_t *sms = (ftdm_sms_data_t*) caller_data->priv;
+			
+
+			ftdm_log(FTDM_LOG_INFO,"FTDM_SIGEVENT_SMS from %s: %s", sms->from, sms->body);
+			if (switch_event_create(&event, SWITCH_EVENT_TRAP) != SWITCH_STATUS_SUCCESS) {
+				ftdm_log(FTDM_LOG_ERROR, "failed to create SMS event\n");
+				return FTDM_FAIL;
+			}
+			switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "from", sms->from);
+			switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "body", sms->body);
+			alarmbits = 0;
+		}
+			//return FTDM_BREAK;
+		break;
 
 	case FTDM_SIGEVENT_ALARM_CLEAR:
 	case FTDM_SIGEVENT_ALARM_TRAP:
@@ -1920,6 +1954,7 @@ static FIO_SIGNAL_CB_FUNCTION(on_common_signal)
 			return FTDM_SUCCESS;
 		}
 		break;
+	
 	case FTDM_SIGEVENT_RELEASED:
 	case FTDM_SIGEVENT_INDICATION_COMPLETED:
 	case FTDM_SIGEVENT_DIALING:
@@ -1948,6 +1983,8 @@ static FIO_SIGNAL_CB_FUNCTION(on_common_signal)
 	}
 
 	if (event) {
+
+		
 		switch_event_add_header(event, SWITCH_STACK_BOTTOM, "span-name", "%s", ftdm_channel_get_span_name(sigmsg->channel));
 		switch_event_add_header(event, SWITCH_STACK_BOTTOM, "span-number", "%d", ftdm_channel_get_span_id(sigmsg->channel));
 		switch_event_add_header(event, SWITCH_STACK_BOTTOM, "chan-number", "%d", ftdm_channel_get_id(sigmsg->channel));
@@ -2105,19 +2142,19 @@ static FIO_SIGNAL_CB_FUNCTION(on_fxs_signal)
 
 				if ((session_a = switch_core_session_locate(ftdm_channel_get_token(sigmsg->channel, 0)))) {
 					channel_a = switch_core_session_get_channel(session_a);
-					br_a_uuid = switch_channel_get_variable(channel_a, SWITCH_SIGNAL_BOND_VARIABLE);
+					br_a_uuid = switch_channel_get_partner_uuid(channel_a);
 
 					tech_pvt = switch_core_session_get_private(session_a);
-					stop_hold(session_a, switch_channel_get_variable(channel_a, SWITCH_SIGNAL_BOND_VARIABLE));
+					stop_hold(session_a, switch_channel_get_partner_uuid(channel_a));
 					switch_clear_flag_locked(tech_pvt, TFLAG_HOLD);
 				}
 
 				if ((session_b = switch_core_session_locate(ftdm_channel_get_token(sigmsg->channel, 1)))) {
 					channel_b = switch_core_session_get_channel(session_b);
-					br_b_uuid = switch_channel_get_variable(channel_b, SWITCH_SIGNAL_BOND_VARIABLE);
+					br_b_uuid = switch_channel_get_partner_uuid(channel_b);
 
 					tech_pvt = switch_core_session_get_private(session_b);
-					stop_hold(session_a, switch_channel_get_variable(channel_b, SWITCH_SIGNAL_BOND_VARIABLE));
+					stop_hold(session_a, switch_channel_get_partner_uuid(channel_b));
 					switch_clear_flag_locked(tech_pvt, TFLAG_HOLD);
 				}
 
@@ -2185,7 +2222,7 @@ static FIO_SIGNAL_CB_FUNCTION(on_fxs_signal)
 					
 					tech_pvt = switch_core_session_get_private(session);
 					channel = switch_core_session_get_channel(session);
-					buuid = switch_channel_get_variable(channel, SWITCH_SIGNAL_BOND_VARIABLE);
+					buuid = switch_channel_get_partner_uuid(channel);
 					ftdm_channel_call_unhold(sigmsg->channel);
 					stop_hold(session, buuid);
 					switch_clear_flag_locked(tech_pvt, TFLAG_HOLD);
@@ -2805,6 +2842,95 @@ static int add_profile_parameters(switch_xml_t cfg, const char *profname, ftdm_c
 	return paramindex;
 }
 
+static void parse_gsm_spans(switch_xml_t cfg, switch_xml_t spans)
+{
+	switch_xml_t myspan, param;
+
+	for (myspan = switch_xml_child(spans, "span"); myspan; myspan = myspan->next) {
+		ftdm_status_t zstatus = FTDM_FAIL;
+		const char *context = "default";
+		const char *dialplan = "XML";
+		ftdm_conf_parameter_t spanparameters[FTDM_MAX_SIG_PARAMETERS];
+		char *id = (char *) switch_xml_attr(myspan, "id");
+		char *name = (char *) switch_xml_attr(myspan, "name");
+		char *configname = (char *) switch_xml_attr(myspan, "cfgprofile");
+		ftdm_span_t *span = NULL;
+		uint32_t span_id = 0;
+		unsigned paramindex = 0;
+
+		if (!name && !id) {
+			CONFIG_ERROR("GSM span missing required attribute 'id' or 'name', skipping ...\n");
+			continue;
+		}
+
+		if (name) {
+			zstatus = ftdm_span_find_by_name(name, &span);
+		} else {
+			if (switch_is_number(id)) {
+				span_id = atoi(id);
+				zstatus = ftdm_span_find(span_id, &span);
+			}
+
+			if (zstatus != FTDM_SUCCESS) {
+				zstatus = ftdm_span_find_by_name(id, &span);
+			}
+		}
+
+		if (zstatus != FTDM_SUCCESS) {
+			CONFIG_ERROR("Error finding FreeTDM span id:%s name:%s\n", switch_str_nil(id), switch_str_nil(name));
+			continue;
+		}
+		
+		if (!span_id) {
+			span_id = ftdm_span_get_id(span);
+		}
+
+		memset(spanparameters, 0, sizeof(spanparameters));
+		paramindex = 0;
+
+		if (configname) {
+			paramindex = add_profile_parameters(cfg, configname, spanparameters, ftdm_array_len(spanparameters));
+			if (paramindex) {
+				ftdm_log(FTDM_LOG_DEBUG, "Added %d parameters from profile %s for span %d\n", paramindex, configname, span_id);
+			}
+		}
+
+		for (param = switch_xml_child(myspan, "param"); param; param = param->next) {
+			char *var = (char *) switch_xml_attr_soft(param, "name");
+			char *val = (char *) switch_xml_attr_soft(param, "value");
+
+			if (ftdm_array_len(spanparameters) - 1 == paramindex) {
+				CONFIG_ERROR("Too many parameters for GSM span, ignoring any parameter after %s\n", var);
+				break;
+			}
+
+			if (!strcasecmp(var, "context")) {
+				context = val;
+			} else if (!strcasecmp(var, "dialplan")) {
+				dialplan = val;
+			} else {
+				spanparameters[paramindex].var = var;
+				spanparameters[paramindex].val = val;
+				paramindex++;
+			}
+		}
+
+		if (ftdm_configure_span_signaling(span, 
+						  "gsm", 
+						  on_clear_channel_signal,
+						  spanparameters) != FTDM_SUCCESS) {
+			CONFIG_ERROR("Error configuring Sangoma GSM FreeTDM span %d\n", span_id);
+			continue;
+		}
+		SPAN_CONFIG[span_id].span = span;
+		switch_copy_string(SPAN_CONFIG[span_id].context, context, sizeof(SPAN_CONFIG[span_id].context));
+		switch_copy_string(SPAN_CONFIG[span_id].dialplan, dialplan, sizeof(SPAN_CONFIG[span_id].dialplan));
+		switch_copy_string(SPAN_CONFIG[span_id].type, "GSM", sizeof(SPAN_CONFIG[span_id].type));
+		ftdm_log(FTDM_LOG_DEBUG, "Configured GSM FreeTDM span %d\n", span_id);
+		ftdm_span_start(span);
+	}
+}
+
 static void parse_bri_pri_spans(switch_xml_t cfg, switch_xml_t spans)
 {
 	switch_xml_t myspan, param;
@@ -2813,7 +2939,7 @@ static void parse_bri_pri_spans(switch_xml_t cfg, switch_xml_t spans)
 		ftdm_status_t zstatus = FTDM_FAIL;
 		const char *context = "default";
 		const char *dialplan = "XML";
-		ftdm_conf_parameter_t spanparameters[30];
+		ftdm_conf_parameter_t spanparameters[FTDM_MAX_SIG_PARAMETERS];
 		char *id = (char *) switch_xml_attr(myspan, "id");
 		char *name = (char *) switch_xml_attr(myspan, "name");
 		char *configname = (char *) switch_xml_attr(myspan, "cfgprofile");
@@ -2982,13 +3108,17 @@ static switch_status_t load_config(void)
 		parse_bri_pri_spans(cfg, spans);
 	}
 
+	if ((spans = switch_xml_child(cfg, "gsm_spans"))) {
+		parse_gsm_spans(cfg, spans);
+	}
+
 	switch_core_hash_init(&globals.ss7_configs, module_pool);
 	if ((spans = switch_xml_child(cfg, "sangoma_ss7_spans"))) {
 		for (myspan = switch_xml_child(spans, "span"); myspan; myspan = myspan->next) {
 			ftdm_status_t zstatus = FTDM_FAIL;
 			const char *context = "default";
 			const char *dialplan = "XML";
-			ftdm_conf_parameter_t spanparameters[30];
+			ftdm_conf_parameter_t spanparameters[FTDM_MAX_SIG_PARAMETERS];
 			char *id = (char *) switch_xml_attr(myspan, "id");
 			char *name = (char *) switch_xml_attr(myspan, "name");
 			char *configname = (char *) switch_xml_attr(myspan, "cfgprofile");
@@ -3390,7 +3520,7 @@ static switch_status_t load_config(void)
 	if ((spans = switch_xml_child(cfg, "pri_spans"))) {
 		for (myspan = switch_xml_child(spans, "span"); myspan; myspan = myspan->next) {
 			char *name = (char *) switch_xml_attr(myspan, "name");
-			ftdm_conf_parameter_t spanparameters[10];
+			ftdm_conf_parameter_t spanparameters[FTDM_MAX_SIG_PARAMETERS];
 			ftdm_status_t zstatus = FTDM_FAIL;
 			const char *context = "default";
 			const char *dialplan = "XML";
@@ -3458,7 +3588,7 @@ static switch_status_t load_config(void)
 
 			ftdm_status_t zstatus = FTDM_FAIL;
 			unsigned paramindex = 0;
-			ftdm_conf_parameter_t spanparameters[10];
+			ftdm_conf_parameter_t spanparameters[FTDM_MAX_SIG_PARAMETERS];
 			const char *context = "default";
 			const char *dialplan = "XML";
 			ftdm_span_t *span = NULL;
@@ -3516,7 +3646,7 @@ static switch_status_t load_config(void)
 	if ((spans = switch_xml_child(cfg, "libpri_spans"))) {
 		for (myspan = switch_xml_child(spans, "span"); myspan; myspan = myspan->next) {
 			char *name = (char *) switch_xml_attr(myspan, "name");
-			ftdm_conf_parameter_t spanparameters[10];
+			ftdm_conf_parameter_t spanparameters[FTDM_MAX_SIG_PARAMETERS];
 			ftdm_status_t zstatus = FTDM_FAIL;
 			const char *context  = "default";
 			const char *dialplan = "XML";
@@ -3591,7 +3721,7 @@ static switch_status_t load_config(void)
 			uint32_t span_id = 0;
 			ftdm_span_t *span = NULL;
 
-			ftdm_conf_parameter_t spanparameters[30];
+			ftdm_conf_parameter_t spanparameters[FTDM_MAX_SIG_PARAMETERS];
 			unsigned paramindex = 0;
 
 			if (!name) {
@@ -4833,11 +4963,13 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_freetdm_load)
 	ftdm_global_set_config_directory(SWITCH_GLOBAL_dirs.conf_dir);
 
 	if (ftdm_global_init() != FTDM_SUCCESS) {
+		ftdm_global_destroy();
 		ftdm_log(FTDM_LOG_ERROR, "Error loading FreeTDM\n");
 		return SWITCH_STATUS_TERM;
 	}
 
 	if (ftdm_global_configuration() != FTDM_SUCCESS) {
+		ftdm_global_destroy();
 		ftdm_log(FTDM_LOG_ERROR, "Error configuring FreeTDM\n");
 		return SWITCH_STATUS_TERM;
 	}

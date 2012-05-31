@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007, Anthony Minessale II
+ * Copyright (c) 2007-2012, Anthony Minessale II
  * All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
@@ -5661,7 +5661,7 @@ static void *ftdm_cpu_monitor_run(ftdm_thread_t *me, void *obj)
 
 static ftdm_status_t ftdm_cpu_monitor_start(void)
 {
-	if (ftdm_interrupt_create(&globals.cpu_monitor.interrupt, FTDM_INVALID_SOCKET) != FTDM_SUCCESS) {
+	if (ftdm_interrupt_create(&globals.cpu_monitor.interrupt, FTDM_INVALID_SOCKET, FTDM_NO_FLAGS) != FTDM_SUCCESS) {
 		ftdm_log(FTDM_LOG_CRIT, "Failed to create CPU monitor interrupt\n");
 		return FTDM_FAIL;
 	}
@@ -5828,6 +5828,8 @@ FT_DECLARE(ftdm_status_t) ftdm_global_destroy(void)
 
 	/* destroy signaling and io modules */
 	ftdm_unload_modules();
+
+	ftdm_global_set_logger( NULL );
 
 	/* finally destroy the globals */
 	ftdm_mutex_lock(globals.mutex);

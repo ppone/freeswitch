@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007, Anthony Minessale II
+ * Copyright (c) 2007-2012, Anthony Minessale II
  * All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
@@ -561,7 +561,7 @@ static FIO_CONFIGURE_FUNCTION(zt_configure)
 			}
 		} else if (!strcasecmp(var, "echo_cancel_level")) {
 			num = atoi(val);
-			if (num < 0 || num > 256) {
+			if (num < 0 || num > 1024) {
 				ftdm_log(FTDM_LOG_WARNING, "invalid echo can val at line %d\n", lineno);
 			} else {
 				zt_globals.eclevel = num;
@@ -1052,12 +1052,14 @@ static __inline__ ftdm_status_t zt_channel_process_event(ftdm_channel_t *fchan, 
 	switch(zt_event_id) {
 	case ZT_EVENT_RINGEROFF:
 		{
-			return FTDM_FAIL;
+			ftdm_log_chan_msg(fchan, FTDM_LOG_DEBUG, "ZT RINGER OFF\n");
+			*event_id = FTDM_OOB_NOOP;
 		}
 		break;
 	case ZT_EVENT_RINGERON:
 		{
-			return FTDM_FAIL;
+			ftdm_log_chan_msg(fchan, FTDM_LOG_DEBUG, "ZT RINGER ON\n");
+			*event_id = FTDM_OOB_NOOP;
 		}
 		break;
 	case ZT_EVENT_RINGBEGIN:
@@ -1176,7 +1178,7 @@ FIO_CHANNEL_NEXT_EVENT_FUNCTION(zt_channel_next_event)
 
 	/* the core already locked the channel for us, so it's safe to call zt_channel_process_event() here */
 	if ((zt_channel_process_event(ftdmchan, &event_id, zt_event_id)) != FTDM_SUCCESS) {
-		ftdm_log_chan_msg(ftdmchan, FTDM_LOG_ERROR, "Failed to process event from channel\n");
+		ftdm_log_chan(ftdmchan, FTDM_LOG_ERROR, "Failed to process DAHDI event %d from channel\n", zt_event_id);
 		return FTDM_FAIL;
 	}
 
@@ -1210,7 +1212,7 @@ FIO_SPAN_NEXT_EVENT_FUNCTION(zt_next_event)
 
 			ftdm_channel_lock(fchan);
 			if ((zt_channel_process_event(fchan, &event_id, zt_event_id)) != FTDM_SUCCESS) {
-				ftdm_log_chan_msg(fchan, FTDM_LOG_ERROR, "Failed to process event from channel\n");
+				ftdm_log_chan(fchan, FTDM_LOG_ERROR, "Failed to process DAHDI event %d from channel\n", zt_event_id);
 				ftdm_channel_unlock(fchan);
 				return FTDM_FAIL;
 			}

@@ -1,6 +1,6 @@
 /* 
  * FreeSWITCH Modular Media Switching Software Library / Soft-Switch Application
- * Copyright (C) 2005-2011, Anthony Minessale II <anthm@freeswitch.org>
+ * Copyright (C) 2005-2012, Anthony Minessale II <anthm@freeswitch.org>
  *
  * Version: MPL 1.1
  *
@@ -724,6 +724,11 @@ SWITCH_DECLARE(int32_t) set_realtime_priority(void)
 	return 0;
 }
 
+SWITCH_DECLARE(uint32_t) switch_core_cpu_count(void)
+{
+	return runtime.cpu_count;
+}
+
 SWITCH_DECLARE(int32_t) set_normal_priority(void)
 {
 	return 0;
@@ -733,12 +738,19 @@ SWITCH_DECLARE(int32_t) set_auto_priority(void)
 {
 #ifndef WIN32
 	runtime.cpu_count = sysconf (_SC_NPROCESSORS_ONLN);
+#else
+	SYSTEM_INFO sysinfo;
+	GetSystemInfo( &sysinfo );
+	runtime.cpu_count = sysinfo.dwNumberOfProcessors;
+#endif
+
+	if (!runtime.cpu_count) runtime.cpu_count = 1;
 
 	/* If we have more than 1 cpu, we should use realtime priority so we can have priority threads */
 	if (runtime.cpu_count > 1) {
 		return set_realtime_priority();
 	}
-#endif
+
 	return 0;
 }
 
@@ -1313,6 +1325,35 @@ SWITCH_DECLARE(uint32_t) switch_core_min_dtmf_duration(uint32_t duration)
 	return runtime.min_dtmf_duration;
 }
 
+SWITCH_DECLARE(switch_status_t) switch_core_thread_set_cpu_affinity(int cpu)
+{
+	switch_status_t status = SWITCH_STATUS_FALSE;
+
+	if (cpu > -1) {
+
+#ifdef HAVE_CPU_SET_MACROS
+		cpu_set_t set;
+
+		CPU_ZERO(&set);
+		CPU_SET(cpu, &set);
+
+		if (!sched_setaffinity(0, sizeof(set), &set)) {
+			status = SWITCH_STATUS_SUCCESS;
+		}
+		
+#else
+#if WIN32
+		if (SetThreadAffinityMask(GetCurrentThread(), (DWORD_PTR) cpu)) {
+			status = SWITCH_STATUS_SUCCESS;
+		}
+#endif
+#endif
+	}
+
+	return status;
+}
+
+
 static void switch_core_set_serial(void)
 {
 	char buf[13] = "";
@@ -1379,7 +1420,7 @@ SWITCH_DECLARE(switch_status_t) switch_core_init(switch_core_flag_t flags, switc
 	gethostname(runtime.hostname, sizeof(runtime.hostname));
 
 	runtime.max_db_handles = 50;
-	runtime.db_handle_timeout = 5000000;;
+	runtime.db_handle_timeout = 5000000;
 	
 	runtime.runlevel++;
 	runtime.sql_buffer_len = 1024 * 32;
@@ -1390,8 +1431,9 @@ SWITCH_DECLARE(switch_status_t) switch_core_init(switch_core_flag_t flags, switc
 	switch_set_flag((&runtime.dummy_cng_frame), SFF_CNG);
 	switch_set_flag((&runtime), SCF_AUTO_SCHEMAS);
 	switch_set_flag((&runtime), SCF_CLEAR_SQL);
+#ifdef WIN32
 	switch_set_flag((&runtime), SCF_THREADED_SYSTEM_EXEC);
-
+#endif
 	switch_set_flag((&runtime), SCF_NO_NEW_SESSIONS);
 	runtime.hard_log_level = SWITCH_LOG_DEBUG;
 	runtime.mailer_app = "sendmail";
@@ -1403,7 +1445,16 @@ SWITCH_DECLARE(switch_status_t) switch_core_init(switch_core_flag_t flags, switc
 	runtime.dbname = NULL;
 #ifndef WIN32
 	runtime.cpu_count = sysconf (_SC_NPROCESSORS_ONLN);
+#else
+	{
+		SYSTEM_INFO sysinfo;
+		GetSystemInfo( &sysinfo );
+		runtime.cpu_count = sysinfo.dwNumberOfProcessors;
+	}
 #endif	
+
+	if (!runtime.cpu_count) runtime.cpu_count = 1;
+
 
 	/* INIT APR and Create the pool context */
 	if (apr_initialize() != SWITCH_STATUS_SUCCESS) {
@@ -1668,7 +1719,7 @@ static void switch_load_core_config(const char *file)
 					} else if (end_of(val) == 'm') {
 						tmp *= (1024 * 1024);
 					}
-					
+
 					if (tmp >= 32000 && tmp < 10500000) {
 						runtime.sql_buffer_len = tmp;
 					} else {
@@ -1707,6 +1758,14 @@ static void switch_load_core_config(const char *file)
 					switch_set_flag((&runtime), SCF_EARLY_HANGUP);
 				} else if (!strcasecmp(var, "colorize-console") && switch_true(val)) {
 					runtime.colorize_console = SWITCH_TRUE;
+				} else if (!strcasecmp(var, "core-db-pre-trans-execute") && !zstr(val)) {
+					runtime.core_db_pre_trans_execute = switch_core_strdup(runtime.memory_pool, val);
+				} else if (!strcasecmp(var, "core-db-post-trans-execute") && !zstr(val)) {
+					runtime.core_db_post_trans_execute = switch_core_strdup(runtime.memory_pool, val);
+				} else if (!strcasecmp(var, "core-db-inner-pre-trans-execute") && !zstr(val)) {
+					runtime.core_db_inner_pre_trans_execute = switch_core_strdup(runtime.memory_pool, val);
+				} else if (!strcasecmp(var, "core-db-inner-post-trans-execute") && !zstr(val)) {
+					runtime.core_db_inner_post_trans_execute = switch_core_strdup(runtime.memory_pool, val);
 				} else if (!strcasecmp(var, "mailer-app") && !zstr(val)) {
 					runtime.mailer_app = switch_core_strdup(runtime.memory_pool, val);
 				} else if (!strcasecmp(var, "mailer-app-args") && val) {
@@ -1859,6 +1918,7 @@ SWITCH_DECLARE(switch_status_t) switch_core_init_and_modload(switch_core_flag_t 
 	runtime.runlevel++;
 
 	switch_core_set_signal_handlers();
+	switch_load_network_lists(SWITCH_FALSE);
 
 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CONSOLE, "Bringing up environment.\n");
 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CONSOLE, "Loading Modules.\n");
@@ -1998,6 +2058,17 @@ SWITCH_DECLARE(int32_t) switch_core_session_ctl(switch_session_ctl_t cmd, void *
 	}
 
 	switch (cmd) {
+	case SCSC_DEBUG_SQL:
+		{
+			if (switch_test_flag((&runtime), SCF_DEBUG_SQL)) {
+				switch_clear_flag((&runtime), SCF_DEBUG_SQL);
+				newintval = 0;
+			} else {
+				switch_set_flag((&runtime), SCF_DEBUG_SQL);
+				newintval = 1;
+			}
+		}
+		break;
 	case SCSC_VERBOSE_EVENTS:
 		if (intval) {
 			if (oldintval > -1) {
