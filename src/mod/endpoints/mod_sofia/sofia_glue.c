@@ -776,19 +776,23 @@ void sofia_glue_set_local_sdp(private_object_t *tech_pvt, const char *ip, switch
 
 const char *sofia_glue_get_codec_string(private_object_t *tech_pvt)
 {
-	const char *codec_string = NULL, *preferred = NULL, *fallback = NULL;
-
-	if (switch_channel_direction(tech_pvt->channel) == SWITCH_CALL_DIRECTION_OUTBOUND) {
-		preferred = tech_pvt->profile->outbound_codec_string;
-		fallback = tech_pvt->profile->inbound_codec_string;
-	} else {
-		preferred = tech_pvt->profile->inbound_codec_string;
-		fallback = tech_pvt->profile->outbound_codec_string;
+	const char *preferred = NULL, *fallback = NULL;
+	
+	if (!(preferred = switch_channel_get_variable(tech_pvt->channel, "absolute_codec_string"))) {
+		preferred = switch_channel_get_variable(tech_pvt->channel, "codec_string");
+	}
+	
+	if (!preferred) {
+		if (switch_channel_direction(tech_pvt->channel) == SWITCH_CALL_DIRECTION_OUTBOUND) {
+			preferred = tech_pvt->profile->outbound_codec_string;
+			fallback = tech_pvt->profile->inbound_codec_string;
+		} else {
+			preferred = tech_pvt->profile->inbound_codec_string;
+			fallback = tech_pvt->profile->outbound_codec_string;
+		}
 	}
 
-	codec_string = !zstr(preferred) ? preferred : fallback;
-
-	return codec_string;
+	return !zstr(preferred) ? preferred : fallback;
 }
 
 void sofia_glue_tech_prepare_codecs(private_object_t *tech_pvt)
@@ -4157,6 +4161,7 @@ int sofia_glue_toggle_hold(private_object_t *tech_pvt, int sendonly)
 	int changed = 0;
 
 	if (sofia_test_flag(tech_pvt, TFLAG_SLA_BARGE) || sofia_test_flag(tech_pvt, TFLAG_SLA_BARGING)) {
+		switch_channel_mark_hold(tech_pvt->channel, sendonly);
 		return 0;
 	}
 
@@ -4699,10 +4704,6 @@ uint8_t sofia_glue_negotiate_sdp(switch_core_session_t *session, const char *r_s
 				goto done;
 			}
 
-			if (switch_channel_test_app_flag_key("T38", tech_pvt->channel, CF_APP_T38)) {
-				sofia_set_flag(tech_pvt, TFLAG_NOREPLY);
-			}
-			
 			if (switch_true(switch_channel_get_variable(channel, "refuse_t38"))) {
 				switch_channel_clear_app_flag_key("T38", tech_pvt->channel, CF_APP_T38);
 				match = 0;
@@ -4710,6 +4711,11 @@ uint8_t sofia_glue_negotiate_sdp(switch_core_session_t *session, const char *r_s
 			} else {
 				const char *var = switch_channel_get_variable(channel, "t38_passthru");
 				int pass = sofia_test_pflag(tech_pvt->profile, PFLAG_T38_PASSTHRU);
+
+
+				if (switch_channel_test_app_flag_key("T38", tech_pvt->channel, CF_APP_T38)) {
+					sofia_set_flag(tech_pvt, TFLAG_NOREPLY);
+				}
 
 				if (var) {
 					if (!(pass = switch_true(var))) {
