@@ -2071,6 +2071,8 @@ void *SWITCH_THREAD_FUNC sofia_profile_thread_run(switch_thread_t *thread, void 
 									  TPTAG_TLS_VERIFY_SUBJECTS(profile->tls_verify_in_subjects)),
 							  TAG_IF(sofia_test_pflag(profile, PFLAG_TLS),
 									 TPTAG_TLS_VERSION(profile->tls_version)),
+							  TAG_IF(sofia_test_pflag(profile, PFLAG_TLS) && profile->tls_timeout,
+									 TPTAG_TLS_TIMEOUT(profile->tls_timeout)),
 							  TAG_IF(!strchr(profile->sipip, ':'),
 									 NTATAG_UDP_MTU(65535)),
 							  TAG_IF(sofia_test_pflag(profile, PFLAG_DISABLE_SRV),
@@ -2252,7 +2254,11 @@ void *SWITCH_THREAD_FUNC sofia_profile_thread_run(switch_thread_t *thread, void 
 	sofia_clear_pflag_locked(profile, PFLAG_SHUTDOWN);
 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "Waiting for worker thread\n");
 
-	switch_thread_join(&st, worker_thread);
+	if ( worker_thread ) {
+		switch_thread_join(&st, worker_thread);
+	} else {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "ERROR: Sofia worker thead failed to start\n");
+	}
 
 	sanity = 4;
 	while (profile->inuse) {
@@ -3930,6 +3936,7 @@ switch_status_t config_sofia(int reload, char *profile_name)
 				profile->sip_force_expires = 0;
 				profile->sip_expires_max_deviation = 0;
 				profile->tls_version = 0;
+				profile->tls_timeout = 300;
 				profile->mflags = MFLAG_REFER | MFLAG_REGISTER;
 				profile->server_rport_level = 1;
 				profile->client_rport_level = 1;
@@ -4750,6 +4757,9 @@ switch_status_t config_sofia(int reload, char *profile_name)
 						} else {
 							profile->tls_version = 0;
 						}
+					} else if (!strcasecmp(var, "tls-timeout")) {
+						int v = atoi(val);
+						profile->tls_timeout = v > 0 ? (unsigned int)v : 300;
 					} else if (!strcasecmp(var, "timer-T1")) {
 						int v = atoi(val);
 						if (v > 0) {
@@ -7669,6 +7679,11 @@ void sofia_handle_sip_i_reinvite(switch_core_session_t *session,
 								 tagi_t tags[])
 {
 	char *call_info = NULL;
+	switch_channel_t *channel = NULL;
+
+	if (session) {
+		channel = switch_core_session_get_channel(session);
+	}
 
 	if (session && profile && sip && sofia_test_pflag(profile, PFLAG_TRACK_CALLS)) {
 		switch_channel_t *channel = switch_core_session_get_channel(session);
@@ -7693,7 +7708,6 @@ void sofia_handle_sip_i_reinvite(switch_core_session_t *session,
 	}
 
 	if (sofia_test_pflag(profile, PFLAG_MANAGE_SHARED_APPEARANCE)) {
-		switch_channel_t *channel = switch_core_session_get_channel(session);
 		if (channel && sip->sip_call_info) {
 			char *p;
 			if ((call_info = sip_header_as_string(nua_handle_home(nh), (void *) sip->sip_call_info))) {
@@ -7707,6 +7721,14 @@ void sofia_handle_sip_i_reinvite(switch_core_session_t *session,
 			}
 		}
 	}
+
+	if (channel) {
+		if (sip->sip_payload && sip->sip_payload->pl_data) {
+			switch_channel_set_variable(channel, "sip_reinvite_sdp", sip->sip_payload->pl_data);
+		}
+		switch_channel_execute_on(channel, "execute_on_sip_reinvite");
+	}
+
 }
 
 void sofia_handle_sip_i_invite(nua_t *nua, sofia_profile_t *profile, nua_handle_t *nh, sofia_private_t *sofia_private, sip_t const *sip,
