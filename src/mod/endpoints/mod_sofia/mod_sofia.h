@@ -90,6 +90,7 @@ typedef struct private_object private_object_t;
 #define MY_EVENT_RECOVERY "sofia::recovery_recv"
 #define MY_EVENT_RECOVERY_SEND "sofia::recovery_send"
 #define MY_EVENT_RECOVERY_RECOVERED "sofia::recovery_recovered"
+#define MY_EVENT_ERROR "sofia::error"
 
 #define MULTICAST_EVENT "multicast::event"
 #define SOFIA_REPLACES_HEADER "_sofia_replaces_"
@@ -278,7 +279,8 @@ typedef enum {
 	PFLAG_NDLB_BROKEN_AUTH_HASH = (1 << 1),
 	PFLAG_NDLB_SENDRECV_IN_SESSION = (1 << 2),
 	PFLAG_NDLB_ALLOW_BAD_IANANAME = (1 << 3),
-	PFLAG_NDLB_ALLOW_NONDUP_SDP = (1 << 4)
+	PFLAG_NDLB_ALLOW_NONDUP_SDP = (1 << 4),
+	PFLAG_NDLB_ALLOW_CRYPTO_IN_AVP = (1 << 5)
 } sofia_NDLB_t;
 
 typedef enum {
@@ -367,13 +369,6 @@ struct mod_sofia_globals {
 	int msg_queue_len;
 	struct sofia_private destroy_private;
 	struct sofia_private keep_private;
-	switch_event_node_t *in_node;
-	switch_event_node_t *probe_node;
-	switch_event_node_t *out_node;
-	switch_event_node_t *roster_node;
-	switch_event_node_t *custom_node;
-	switch_event_node_t *mwi_node;
-	switch_event_node_t *recovery_node;
 	int guess_mask;
 	char guess_mask_str[16];
 	int debug_presence;
@@ -444,9 +439,11 @@ typedef enum {
 
 struct sofia_gateway_subscription {
 	sofia_gateway_t *gateway;
+	nua_handle_t *nh;
 	char *expires_str;
 	char *event;				/* eg, 'message-summary' to subscribe to MWI events */
 	char *content_type;			/* eg, application/simple-message-summary in the case of MWI events */
+	char *request_uri;
 	uint32_t freq;
 	int32_t retry_seconds;
 	time_t expires;
@@ -458,7 +455,6 @@ struct sofia_gateway_subscription {
 struct sofia_gateway {
 	sofia_private_t *sofia_private;
 	nua_handle_t *nh;
-	nua_handle_t *sub_nh;
 	sofia_profile_t *profile;
 	char *name;
 	char *register_scheme;
@@ -497,7 +493,6 @@ struct sofia_gateway {
 	int32_t retry_seconds;
 	int32_t reg_timeout_seconds;
 	int32_t failure_status;
-	sub_state_t sub_state;
 	reg_state_t state;
 	switch_memory_pool_t *pool;
 	int deleted;
@@ -836,6 +831,9 @@ struct private_object {
 	char *local_sdp_video_zrtp_hash;
 	char *remote_sdp_audio_zrtp_hash;
 	char *remote_sdp_video_zrtp_hash;
+	char *respond_phrase;
+	int respond_code;
+	char *respond_dest;
 };
 
 struct callback_t {
@@ -1116,7 +1114,7 @@ switch_status_t reconfig_sofia(sofia_profile_t *profile);
 void sofia_glue_del_gateway(sofia_gateway_t *gp);
 void sofia_glue_gateway_list(sofia_profile_t *profile, switch_stream_handle_t *stream, int up);
 void sofia_glue_del_every_gateway(sofia_profile_t *profile);
-void sofia_reg_send_reboot(sofia_profile_t *profile, const char *user, const char *host, const char *contact, const char *user_agent,
+void sofia_reg_send_reboot(sofia_profile_t *profile, const char *callid, const char *user, const char *host, const char *contact, const char *user_agent,
 						   const char *network_ip);
 void sofia_glue_restart_all_profiles(void);
 int sofia_glue_toggle_hold(private_object_t *tech_pvt, int sendonly);

@@ -95,13 +95,14 @@ SPAN_DECLARE_NONSTD(int) fax_modems_v17_v21_rx(void *user_data, const int16_t am
     fsk_rx(&s->v21_rx, amp, len);
     if (s->rx_frame_received)
     {
-        /* We have received something, and the fast modem has not trained. We must
-           be receiving valid V.21 */
+        /* We have received something, and the fast modem has not trained. We must be receiving valid V.21 */
         span_log(&s->logging, SPAN_LOG_FLOW, "Switching from V.17 + V.21 to V.21 (%.2fdBm0)\n", fsk_rx_signal_power(&s->v21_rx));
-        s->rx_handler = (span_rx_handler_t *) &fsk_rx;
-        s->rx_fillin_handler = (span_rx_fillin_handler_t *) &fsk_rx_fillin;
+        s->rx_handler = (span_rx_handler_t) &fsk_rx;
+        s->rx_fillin_handler = (span_rx_fillin_handler_t) &fsk_rx_fillin;
         s->rx_user_data = &s->v21_rx;
+        s->rx_fillin_user_data = &s->v21_rx;
     }
+    /*endif*/
     return 0;
 }
 /*- End of function --------------------------------------------------------*/
@@ -126,13 +127,14 @@ SPAN_DECLARE_NONSTD(int) fax_modems_v27ter_v21_rx(void *user_data, const int16_t
     fsk_rx(&s->v21_rx, amp, len);
     if (s->rx_frame_received)
     {
-        /* We have received something, and the fast modem has not trained. We must
-           be receiving valid V.21 */
+        /* We have received something, and the fast modem has not trained. We must be receiving valid V.21 */
         span_log(&s->logging, SPAN_LOG_FLOW, "Switching from V.27ter + V.21 to V.21 (%.2fdBm0)\n", fsk_rx_signal_power(&s->v21_rx));
-        s->rx_handler = (span_rx_handler_t *) &fsk_rx;
-        s->rx_fillin_handler = (span_rx_fillin_handler_t *) &fsk_rx_fillin;
+        s->rx_handler = (span_rx_handler_t) &fsk_rx;
+        s->rx_fillin_handler = (span_rx_fillin_handler_t) &fsk_rx_fillin;
         s->rx_user_data = &s->v21_rx;
+        s->rx_fillin_user_data = &s->v21_rx;
     }
+    /*endif*/
     return 0;
 }
 /*- End of function --------------------------------------------------------*/
@@ -157,13 +159,14 @@ SPAN_DECLARE_NONSTD(int) fax_modems_v29_v21_rx(void *user_data, const int16_t am
     fsk_rx(&s->v21_rx, amp, len);
     if (s->rx_frame_received)
     {
-        /* We have received something, and the fast modem has not trained. We must
-           be receiving valid V.21 */
+        /* We have received something, and the fast modem has not trained. We must be receiving valid V.21 */
         span_log(&s->logging, SPAN_LOG_FLOW, "Switching from V.29 + V.21 to V.21 (%.2fdBm0)\n", fsk_rx_signal_power(&s->v21_rx));
-        s->rx_handler = (span_rx_handler_t *) &fsk_rx;
-        s->rx_fillin_handler = (span_rx_fillin_handler_t *) &fsk_rx_fillin;
+        s->rx_handler = (span_rx_handler_t) &fsk_rx;
+        s->rx_fillin_handler = (span_rx_fillin_handler_t) &fsk_rx_fillin;
         s->rx_user_data = &s->v21_rx;
+        s->rx_fillin_user_data = &s->v21_rx;
     }
+    /*endif*/
     return 0;
 }
 /*- End of function --------------------------------------------------------*/
@@ -181,9 +184,11 @@ SPAN_DECLARE_NONSTD(int) fax_modems_v29_v21_rx_fillin(void *user_data, int len)
 
 static void v21_rx_status_handler(void *user_data, int status)
 {
+#if 0
     fax_modems_state_t *s;
 
     s = (fax_modems_state_t *) user_data;
+#endif
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -196,11 +201,13 @@ static void v17_rx_status_handler(void *user_data, int status)
     {
     case SIG_STATUS_TRAINING_SUCCEEDED:
         span_log(&s->logging, SPAN_LOG_FLOW, "Switching to V.17 (%.2fdBm0)\n", v17_rx_signal_power(&s->fast_modems.v17_rx));
-        s->rx_handler = (span_rx_handler_t *) &v17_rx;
-        s->rx_fillin_handler = (span_rx_fillin_handler_t *) &v17_rx_fillin;
+        s->rx_handler = (span_rx_handler_t) &v17_rx;
+        s->rx_fillin_handler = (span_rx_fillin_handler_t) &v17_rx_fillin;
         s->rx_user_data = &s->fast_modems.v17_rx;
+        s->rx_fillin_user_data = &s->fast_modems.v17_rx;
         break;
     }
+    /*endswitch*/
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -213,11 +220,13 @@ static void v27ter_rx_status_handler(void *user_data, int status)
     {
     case SIG_STATUS_TRAINING_SUCCEEDED:
         span_log(&s->logging, SPAN_LOG_FLOW, "Switching to V.27ter (%.2fdBm0)\n", v27ter_rx_signal_power(&s->fast_modems.v27ter_rx));
-        s->rx_handler = (span_rx_handler_t *) &v27ter_rx;
-        s->rx_fillin_handler = (span_rx_fillin_handler_t *) &v27ter_rx_fillin;
+        s->rx_handler = (span_rx_handler_t) &v27ter_rx;
+        s->rx_fillin_handler = (span_rx_fillin_handler_t) &v27ter_rx_fillin;
         s->rx_user_data = &s->fast_modems.v27ter_rx;
+        s->rx_fillin_user_data = &s->fast_modems.v27ter_rx;
         break;
     }
+    /*endswitch*/
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -230,11 +239,13 @@ static void v29_rx_status_handler(void *user_data, int status)
     {
     case SIG_STATUS_TRAINING_SUCCEEDED:
         span_log(&s->logging, SPAN_LOG_FLOW, "Switching to V.29 (%.2fdBm0)\n", v29_rx_signal_power(&s->fast_modems.v29_rx));
-        s->rx_handler = (span_rx_handler_t *) &v29_rx;
-        s->rx_fillin_handler = (span_rx_fillin_handler_t *) &v29_rx_fillin;
+        s->rx_handler = (span_rx_handler_t) &v29_rx;
+        s->rx_fillin_handler = (span_rx_fillin_handler_t) &v29_rx_fillin;
         s->rx_user_data = &s->fast_modems.v29_rx;
+        s->rx_fillin_user_data = &s->fast_modems.v29_rx;
         break;
     }
+    /*endswitch*/
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -252,6 +263,7 @@ SPAN_DECLARE(void) fax_modems_start_rx_modem(fax_modems_state_t *s, int which)
         v29_rx_set_modem_status_handler(&s->fast_modems.v29_rx, v29_rx_status_handler, s);
         break;
     }
+    /*endswitch*/
     fsk_rx_set_modem_status_handler(&s->v21_rx, v21_rx_status_handler, s);
 }
 /*- End of function --------------------------------------------------------*/
@@ -288,6 +300,7 @@ SPAN_DECLARE(fax_modems_state_t *) fax_modems_init(fax_modems_state_t *s,
         if ((s = (fax_modems_state_t *) malloc(sizeof(*s))) == NULL)
             return NULL;
     }
+    /*endif*/
     memset(s, 0, sizeof(*s));
     s->use_tep = use_tep;
 
@@ -312,13 +325,15 @@ SPAN_DECLARE(fax_modems_state_t *) fax_modems_init(fax_modems_state_t *s,
                                     tone_callback,
                                     user_data);
     }
+    /*endif*/
     dc_restore_init(&s->dc_restore);
 
     s->rx_signal_present = FALSE;
-    s->rx_handler = (span_rx_handler_t *) &span_dummy_rx;
-    s->rx_fillin_handler = (span_rx_fillin_handler_t *) &span_dummy_rx;
+    s->rx_handler = (span_rx_handler_t) &span_dummy_rx;
+    s->rx_fillin_handler = (span_rx_fillin_handler_t) &span_dummy_rx;
     s->rx_user_data = NULL;
-    s->tx_handler = (span_tx_handler_t *) &silence_gen;
+    s->rx_fillin_user_data = NULL;
+    s->tx_handler = (span_tx_handler_t) &silence_gen;
     s->tx_user_data = &s->silence_gen;
     return s;
 }
@@ -334,6 +349,7 @@ SPAN_DECLARE(int) fax_modems_free(fax_modems_state_t *s)
 {
     if (s)
         free(s);
+    /*endif*/
     return 0;
 }
 /*- End of function --------------------------------------------------------*/

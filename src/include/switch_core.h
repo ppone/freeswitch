@@ -1648,6 +1648,15 @@ SWITCH_DECLARE(switch_status_t) switch_core_file_read(_In_ switch_file_handle_t 
 SWITCH_DECLARE(switch_status_t) switch_core_file_write(_In_ switch_file_handle_t *fh, void *data, switch_size_t *len);
 
 /*! 
+  \brief Write media to a file handle
+  \param fh the file handle to write to
+  \param data the buffer to write
+  \param len the amount of data to write from the buffer
+  \return SWITCH_STATUS_SUCCESS with len adjusted to the bytes written if successful
+*/
+SWITCH_DECLARE(switch_status_t) switch_core_file_write_video(_In_ switch_file_handle_t *fh, void *data, switch_size_t *len);
+
+/*!
   \brief Seek a position in a file
   \param fh the file handle to seek
   \param cur_pos the current position in the file
@@ -2107,6 +2116,7 @@ SWITCH_DECLARE(void *) switch_loadable_module_create_interface(switch_loadable_m
  \return the current epoch time in microseconds
 */
 SWITCH_DECLARE(switch_time_t) switch_micro_time_now(void);
+SWITCH_DECLARE(switch_time_t) switch_mono_micro_time_now(void);
 SWITCH_DECLARE(void) switch_core_memory_reclaim(void);
 SWITCH_DECLARE(void) switch_core_memory_reclaim_events(void);
 SWITCH_DECLARE(void) switch_core_memory_reclaim_logger(void);
@@ -2130,6 +2140,7 @@ SWITCH_DECLARE(void) switch_time_set_timerfd(switch_bool_t enable);
 SWITCH_DECLARE(void) switch_time_set_nanosleep(switch_bool_t enable);
 SWITCH_DECLARE(void) switch_time_set_matrix(switch_bool_t enable);
 SWITCH_DECLARE(void) switch_time_set_cond_yield(switch_bool_t enable);
+SWITCH_DECLARE(void) switch_time_set_use_system_time(switch_bool_t enable);
 SWITCH_DECLARE(uint32_t) switch_core_min_dtmf_duration(uint32_t duration);
 SWITCH_DECLARE(uint32_t) switch_core_max_dtmf_duration(uint32_t duration);
 SWITCH_DECLARE(double) switch_core_min_idle_cpu(double new_limit);
@@ -2147,6 +2158,8 @@ SWITCH_DECLARE(switch_status_t) switch_core_chat_send(const char *dest_proto, sw
 SWITCH_DECLARE(switch_status_t) switch_core_chat_deliver(const char *dest_proto, switch_event_t **message_event);
 
 SWITCH_DECLARE(switch_status_t) switch_ivr_preprocess_session(switch_core_session_t *session, const char *cmds);
+SWITCH_DECLARE(void) switch_core_sqldb_stop_thread(void);
+SWITCH_DECLARE(void) switch_core_sqldb_start_thread(void);
 
 ///\}
 
@@ -2332,7 +2345,7 @@ SWITCH_DECLARE(int) switch_max_file_desc(void);
 SWITCH_DECLARE(void) switch_close_extra_files(int *keep, int keep_ttl);
 SWITCH_DECLARE(switch_status_t) switch_core_thread_set_cpu_affinity(int cpu);
 SWITCH_DECLARE(void) switch_os_yield(void);
-
+SWITCH_DECLARE(switch_status_t) switch_core_get_stacksizes(switch_size_t *cur, switch_size_t *max);
 SWITCH_END_EXTERN_C
 #endif
 /* For Emacs:

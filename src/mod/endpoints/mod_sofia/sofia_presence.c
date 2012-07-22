@@ -862,7 +862,102 @@ static void do_dialog_probe(switch_event_t *event)
 	switch_safe_free(probe_user);
 }
 
+static void send_conference_data(sofia_profile_t *profile, switch_event_t *event)
+{
+	char *sql;
+	struct pres_sql_cb cb = {profile, 0};
+	const char *call_id = switch_event_get_header(event, "call_id");
+	const char *from_user = switch_event_get_header(event, "conference-name");
+	const char *from_host = switch_event_get_header(event, "conference-domain");
+	const char *notfound = switch_event_get_header(event, "notfound");
+	const char *body = switch_event_get_body(event);
 
+	if (!(from_user && from_host)) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Event information not given\n");
+		return;
+	}
+
+	if (switch_true(notfound)) {
+		sql = switch_mprintf("update sip_subscriptions set expires=%ld where "
+							 "hostname='%q' and profile_name='%q' and sub_to_user='%q' and sub_to_host='%q' and event='conference'",
+							 (long)switch_epoch_time_now(NULL),
+							 mod_sofia_globals.hostname, profile->name,
+							 from_user, from_host);
+
+		sofia_glue_execute_sql_now(profile, &sql, SWITCH_TRUE);
+	}
+
+
+	if (call_id) {
+		sql = switch_mprintf("select full_to, full_from, contact %q ';_;isfocus', expires, call_id, event, network_ip, network_port, "
+							 "'application/conference-info+xml' as ct,'%q' as pt "
+							 " from sip_subscriptions where "
+							 "hostname='%q' and profile_name='%q' and sub_to_user='%q' and sub_to_host='%q' and event='conference'"
+							 "and call_id = '%q' ", 
+							 switch_sql_concat(),
+							 switch_str_nil(body),
+							 mod_sofia_globals.hostname, profile->name,
+							 from_user, from_host, call_id);
+	} else {
+		sql = switch_mprintf("select full_to, full_from, contact %q ';_;isfocus', expires, call_id, event, network_ip, network_port, "
+							 "'application/conference-info+xml' as ct,'%q' as pt "
+							 " from sip_subscriptions where "
+							 "hostname='%q' and profile_name='%q' and sub_to_user='%q' and sub_to_host='%q' and event='conference'",
+							 switch_sql_concat(),
+							 switch_str_nil(body),
+							 mod_sofia_globals.hostname, profile->name,
+							 from_user, from_host);
+	}
+
+	sofia_glue_execute_sql_callback(profile, profile->ireg_mutex, sql, sofia_presence_send_sql, &cb);
+	switch_safe_free(sql);
+
+}
+
+static void conference_data_event_handler(switch_event_t *event)
+{
+	const char *pname;
+	//const char *from_user = switch_event_get_header(event, "conference-name");
+	//const char *from_host = switch_event_get_header(event, "conference-domain");
+	const char *host = switch_event_get_header(event, "conference-domain");
+	char *dup_domain = NULL;
+	sofia_profile_t *profile = NULL;
+
+	if (zstr(host)) {
+		dup_domain = switch_core_get_variable_dup("domain");
+		host = dup_domain;
+	}
+
+	if ((pname = switch_event_get_header(event, "sofia-profile"))) {
+		profile = sofia_glue_find_profile(pname);
+	}
+	
+	if (host && !profile) {
+		profile = sofia_glue_find_profile(host);
+	}
+
+	if (profile) {
+		send_conference_data(profile, event);
+		sofia_glue_release_profile(profile);
+	} else {
+		switch_console_callback_match_t *matches;
+		
+		if (list_profiles_full(NULL, NULL, &matches, SWITCH_FALSE) == SWITCH_STATUS_SUCCESS) {
+			switch_console_callback_match_node_t *m;
+			
+			for (m = matches->head; m; m = m->next) {
+				if ((profile = sofia_glue_find_profile(m->val))) {
+					send_conference_data(profile, event);
+					sofia_glue_release_profile(profile);
+				}
+			}
+			
+			switch_console_free_matches(&matches);
+		}
+	}
+
+	switch_safe_free(dup_domain);
+}
 
 static void actual_sofia_presence_event_handler(switch_event_t *event)
 {
@@ -1374,7 +1469,13 @@ void *SWITCH_THREAD_FUNC sofia_presence_event_thread_run(switch_thread_t *thread
 			if (!pop) {
 				break;
 			}
-			actual_sofia_presence_event_handler(event);
+			
+			if (event->event_id == SWITCH_EVENT_CONFERENCE_DATA) {
+				conference_data_event_handler(event);
+			} else {
+				actual_sofia_presence_event_handler(event);
+			}
+
 			switch_event_destroy(&event);
 			count++;
 		}
@@ -1871,14 +1972,22 @@ static void _send_presence_notify(sofia_profile_t *profile,
 	char *our_contact = profile->url, *our_contact_dup = NULL;
 
 	sofia_destination_t *dst = NULL;
-	char *contact_str, *contact, *user_via = NULL;
+	char *contact_str, *contact, *user_via = NULL, *send_contact = NULL;
 	char *route_uri = NULL, *o_contact_dup = NULL, *tmp, *to_uri, *dcs = NULL;
 	const char *tp;
+	char *cparams = NULL;
 
 	if (zstr(full_to) || zstr(full_from) || zstr(o_contact)) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "MISSING DATA TO SEND NOTIFY.\n");
 		return;
 	}
+
+	if ((cparams = strstr(o_contact, ";_;"))) {
+		cparams += 3;
+	}
+		
+
+
 	
     tmp = (char *)o_contact;
 	o_contact_dup = sofia_glue_get_url_from_contact(tmp, 1);
@@ -2012,6 +2121,12 @@ static void _send_presence_notify(sofia_profile_t *profile,
 	callsequence = ++profile->cseq_base;
 	switch_mutex_unlock(profile->ireg_mutex);
 	
+	if (cparams) {
+		send_contact = switch_mprintf("%s;%s", contact_str, cparams);
+		contact_str = send_contact;
+	}
+
+
 
 	nh = nua_handle(profile->nua, NULL, NUTAG_URL(contact), SIPTAG_CONTACT_STR(contact_str), TAG_END());
 	cseq = sip_cseq_create(nh->nh_home, callsequence, SIP_METHOD_NOTIFY);
@@ -2047,6 +2162,7 @@ static void _send_presence_notify(sofia_profile_t *profile,
 	sofia_glue_free_destination(dst);
 	switch_safe_free(user_via);
 	switch_safe_free(o_contact_dup);
+	switch_safe_free(send_contact);
 	switch_safe_free(our_contact_dup);
 
 
@@ -2730,7 +2846,11 @@ static int sofia_presence_sub_callback(void *pArg, int argc, char **argv, char *
 						if (!zstr(op)) {
 							//switch_snprintf(status_line, sizeof(status_line), "%sing", what);
 							//} else {
-							switch_snprintf(status_line, sizeof(status_line), "%s %s", what, op);
+							if (sofia_test_pflag(profile, PFLAG_PRESENCE_PRIVACY)) {
+								switch_snprintf(status_line, sizeof(status_line), "%s", what);
+							} else {
+								switch_snprintf(status_line, sizeof(status_line), "%s %s", what, op);
+							}
 						}
 
 						rpid = "on-the-phone";
@@ -2759,7 +2879,11 @@ static int sofia_presence_sub_callback(void *pArg, int argc, char **argv, char *
 					if (!term && !strcmp(status, "hold")) {
 						rpid = "on-the-phone";
 						if (!zstr(op)) {
-							switch_snprintf(status_line, sizeof(status_line), "Hold %s", op);
+							if (sofia_test_pflag(profile, PFLAG_PRESENCE_PRIVACY)) {
+								switch_snprintf(status_line, sizeof(status_line), "Hold");
+							} else {
+								switch_snprintf(status_line, sizeof(status_line), "Hold %s", op);
+							}
 							force_status = 1;
 						}
 					}
@@ -3616,7 +3740,7 @@ void sofia_presence_handle_sip_i_subscribe(int status,
 
 				now = switch_epoch_time_now(NULL);
 				sql = switch_mprintf("insert into sip_dialogs (sip_from_user,sip_from_host,call_info,call_info_state,hostname,expires,rcd,profile_name) "
-									 "values ('%q','%q','%q','seized','%q',%ld,%ld,'%q')",
+									 "values ('%q','%q','%q','seized','%q',%"SWITCH_TIME_T_FMT",%ld,'%q')",
 									 to_user, to_host, switch_str_nil(p), mod_sofia_globals.hostname, 
 									 switch_epoch_time_now(NULL) + exp_delta, (long)now, profile->name);
 
@@ -3649,11 +3773,20 @@ void sofia_presence_handle_sip_i_subscribe(int status,
 
 			switch_safe_free(sql);
 		}
-	}
-
-	if ( sip->sip_event && sip->sip_event->o_type && !strcasecmp(sip->sip_event->o_type, "ua-profile") && contact_host ) {
+	} else 	if (!strcasecmp(event, "conference")) {
+		switch_event_t *event;
+		switch_event_create(&event, SWITCH_EVENT_CONFERENCE_DATA_QUERY);
+		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "Conference-Name", to_user);
+		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "Conference-Domain", to_host);
+		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "Query-From", from_user);
+		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "Query-From-Domain", from_host);
+		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "Call-Id", call_id);
+		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "Sofia-Profile", profile->name);
+		switch_event_fire(&event);
+	} else if ( sip->sip_event && sip->sip_event->o_type && !strcasecmp(sip->sip_event->o_type, "ua-profile") && contact_host ) {
 		switch_event_t *params;
 		char *uri = NULL;
+		char *extra_headers = NULL;
 
 		if ( contact_port ) {
 			uri = switch_mprintf("sip:%s:%s", contact_host, contact_port);
@@ -3664,16 +3797,21 @@ void sofia_presence_handle_sip_i_subscribe(int status,
 		if ( uri ) {
 			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "sending pnp NOTIFY to %s\n", uri);
 
+			/* Grandstream REALLY uses a header called Message Body */
+			extra_headers = switch_mprintf("MessageBody: %s\r\n", profile->pnp_prov_url);
+
 			switch_event_create(&params, SWITCH_EVENT_NOTIFY);
 			switch_event_add_header_string(params, SWITCH_STACK_BOTTOM, "profile", profile->pnp_notify_profile);
 			switch_event_add_header_string(params, SWITCH_STACK_BOTTOM, "event-string", sip->sip_event->o_type);
 			switch_event_add_header_string(params, SWITCH_STACK_BOTTOM, "to-uri", uri);
 			switch_event_add_header_string(params, SWITCH_STACK_BOTTOM, "from-uri", uri);
+			switch_event_add_header_string(params, SWITCH_STACK_BOTTOM, "extra-headers", extra_headers);
 			switch_event_add_header_string(params, SWITCH_STACK_BOTTOM, "content-type", "application/url");
 			switch_event_add_body(params, "%s", profile->pnp_prov_url);
 			switch_event_fire(&params);
 
 			switch_safe_free(uri);
+			switch_safe_free(extra_headers);
 		}
 	}
 
@@ -3849,10 +3987,10 @@ void sofia_presence_handle_sip_r_subscribe(int status,
 		gw_sub_ptr->state = SUB_STATE_FAILED;
 
 		if (sofia_private) {
-			if (sofia_private->gateway->sub_nh) {
-				nua_handle_bind(sofia_private->gateway->sub_nh, NULL);
-				nua_handle_destroy(sofia_private->gateway->sub_nh);
-				sofia_private->gateway->sub_nh = NULL;
+			if (gw_sub_ptr->nh) {
+				nua_handle_bind(gw_sub_ptr->nh, NULL);
+				nua_handle_destroy(gw_sub_ptr->nh);
+				gw_sub_ptr->nh = NULL;
 			}
 		} else {
 			nua_handle_destroy(nh);

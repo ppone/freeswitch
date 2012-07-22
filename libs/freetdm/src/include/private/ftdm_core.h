@@ -104,10 +104,6 @@
 #include <sys/time.h>
 #endif
 
-#ifdef __linux__
-#include <execinfo.h>
-#endif
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -218,7 +214,7 @@ extern "C" {
 			ftdm_mutex_lock(obj->mutex);					\
 		}									\
 		if(!__safety) {								\
-			ftdm_log(FTDM_LOG_CRIT, "flag %d was never cleared\n", flag);	\
+			ftdm_log(FTDM_LOG_CRIT, "flag %"FTDM_UINT64_FMT" was never cleared\n", (uint64_t)flag);	\
 		}									\
 	} while(0);
 
@@ -489,6 +485,7 @@ struct ftdm_span {
 	fio_event_cb_t event_callback;
 	ftdm_mutex_t *mutex;
 	ftdm_trunk_type_t trunk_type;
+	ftdm_trunk_mode_t trunk_mode;
 	ftdm_analog_start_type_t start_type;
 	ftdm_signal_type_t signal_type;
 	uint32_t last_used_index;
@@ -698,7 +695,7 @@ FT_DECLARE(ftdm_status_t) ftdm_sigmsg_set_raw_data(ftdm_sigmsg_t *sigmsg, void *
 */
 #define ftdm_assert(assertion, msg) \
 	if (!(assertion)) { \
-		ftdm_log(FTDM_LOG_CRIT, msg); \
+		ftdm_log(FTDM_LOG_CRIT, "%s", msg); \
 		if (g_ftdm_crash_policy & FTDM_CRASH_ON_ASSERT) { \
 			ftdm_abort();  \
 		} \
@@ -709,7 +706,7 @@ FT_DECLARE(ftdm_status_t) ftdm_sigmsg_set_raw_data(ftdm_sigmsg_t *sigmsg, void *
 */
 #define ftdm_assert_return(assertion, retval, msg) \
 	if (!(assertion)) { \
-		ftdm_log(FTDM_LOG_CRIT, msg); \
+		ftdm_log(FTDM_LOG_CRIT, "%s", msg); \
 		if (g_ftdm_crash_policy & FTDM_CRASH_ON_ASSERT) { \
 			ftdm_abort();  \
 		} else { \

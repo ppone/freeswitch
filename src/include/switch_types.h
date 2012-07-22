@@ -143,6 +143,7 @@ SWITCH_BEGIN_EXTERN_C
 #define SWITCH_CHANNEL_EXECUTE_ON_RING_VARIABLE "execute_on_ring"
 #define SWITCH_CHANNEL_EXECUTE_ON_TONE_DETECT_VARIABLE "execute_on_tone_detect"
 #define SWITCH_CHANNEL_EXECUTE_ON_ORIGINATE_VARIABLE "execute_on_originate"
+#define SWITCH_CHANNEL_EXECUTE_ON_POST_ORIGINATE_VARIABLE "execute_on_post_originate"
 
 #define SWITCH_CHANNEL_API_ON_ANSWER_VARIABLE "api_on_answer"
 #define SWITCH_CHANNEL_API_ON_PRE_ANSWER_VARIABLE "api_on_pre_answer"
@@ -150,6 +151,7 @@ SWITCH_BEGIN_EXTERN_C
 #define SWITCH_CHANNEL_API_ON_RING_VARIABLE "api_on_ring"
 #define SWITCH_CHANNEL_API_ON_TONE_DETECT_VARIABLE "api_on_tone_detect"
 #define SWITCH_CHANNEL_API_ON_ORIGINATE_VARIABLE "api_on_originate"
+#define SWITCH_CHANNEL_API_ON_POST_ORIGINATE_VARIABLE "api_on_post_originate"
 
 #define SWITCH_CALL_TIMEOUT_VARIABLE "call_timeout"
 #define SWITCH_HOLDING_UUID_VARIABLE "holding_uuid"
@@ -539,6 +541,7 @@ typedef struct {
 	switch_size_t raw_bytes;
 	switch_size_t media_bytes;
 	switch_size_t packet_count;
+	switch_size_t period_packet_count;
 	switch_size_t media_packet_count;
 	switch_size_t skip_packet_count;
 	switch_size_t jb_packet_count;
@@ -551,13 +554,15 @@ typedef struct {
 
 typedef struct {
 	uint32_t packet_count;
-	uint32_t octet_count;
+	uint32_t octet_count; 
+	uint32_t peer_ssrc;
 } switch_rtcp_numbers_t;
 
 typedef struct {
 	switch_rtp_numbers_t inbound;
 	switch_rtp_numbers_t outbound;
 	switch_rtcp_numbers_t rtcp;
+	uint32_t read_count;
 } switch_rtp_stats_t;
 
 typedef enum {
@@ -708,7 +713,7 @@ typedef enum {
 	*/
 
 
-	RTP_BUG_GEN_ONE_GEN_ALL = (1 << 8)
+	RTP_BUG_GEN_ONE_GEN_ALL = (1 << 8),
 
 	/*
 	  Some RTP endpoints (and by some we mean *cough* _SONUS_!) do not like it when the timestamps jump forward or backwards in time.
@@ -722,6 +727,12 @@ typedef enum {
 
 	 */
 
+	RTP_BUG_CHANGE_SSRC_ON_MARKER = (1 << 9)
+
+	/*
+	  By default FS will change the SSRC when the marker is set and it detects a timestamp reset.
+	  If this setting is enabled it will NOT do this (old behaviour).
+	 */
 
 } switch_rtp_bug_flag_t;
 
@@ -890,6 +901,7 @@ typedef enum {
 	SWITCH_MESSAGE_INDICATE_INFO,
 	SWITCH_MESSAGE_INDICATE_AUDIO_DATA,
 	SWITCH_MESSAGE_INDICATE_BLIND_TRANSFER_RESPONSE,
+	SWITCH_MESSAGE_INDICATE_STUN_ERROR,
 	SWITCH_MESSAGE_INVALID
 } switch_core_session_message_types_t;
 
@@ -1221,6 +1233,8 @@ typedef enum {
 	CF_CHANNEL_SWAP,
 	CF_PICKUP,
 	CF_CONFIRM_BLIND_TRANSFER,
+	CF_NO_PRESENCE,
+	CF_CONFERENCE,
 	/* WARNING: DO NOT ADD ANY FLAGS BELOW THIS LINE */
 	/* IF YOU ADD NEW ONES CHECK IF THEY SHOULD PERSIST OR ZERO THEM IN switch_core_session.c switch_core_session_request_xml() */
 	CF_FLAG_MAX
@@ -1642,6 +1656,10 @@ typedef enum {
 	SWITCH_EVENT_SOCKET_DATA,
 	SWITCH_EVENT_MEDIA_BUG_START,
 	SWITCH_EVENT_MEDIA_BUG_STOP,
+	SWITCH_EVENT_CONFERENCE_DATA_QUERY,
+	SWITCH_EVENT_CONFERENCE_DATA,
+	SWITCH_EVENT_CALL_SETUP_REQ,
+	SWITCH_EVENT_CALL_SETUP_RESULT,
 	SWITCH_EVENT_ALL
 } switch_event_types_t;
 
@@ -1757,6 +1775,7 @@ typedef enum {
 	SCSC_THREADED_SYSTEM_EXEC,
 	SCSC_SYNC_CLOCK_WHEN_IDLE,
 	SCSC_DEBUG_SQL,
+	SCSC_SQL,
 } switch_session_ctl_t;
 
 typedef enum {

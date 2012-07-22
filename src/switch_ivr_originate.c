@@ -701,6 +701,9 @@ static uint8_t check_channel_status(originate_global_t *oglobals, originate_stat
 			!switch_channel_test_flag(originate_status[i].peer_channel, CF_ORIGINATING)
 			) {
 			(oglobals->hups)++;
+			if (switch_channel_test_flag(originate_status[i].peer_channel, CF_PICKUP)) {
+				pickups--;
+			}
 		} else if ((switch_channel_test_flag(originate_status[i].peer_channel, CF_ANSWERED) ||
 					(oglobals->early_ok && switch_channel_test_flag(originate_status[i].peer_channel, CF_EARLY_MEDIA)) ||
 					(oglobals->ring_ready && oglobals->return_ring_ready && len == 1 &&
@@ -753,7 +756,7 @@ static uint8_t check_channel_status(originate_global_t *oglobals, originate_stat
 		}
 	}
 
-	if (oglobals->hups + pickups == len) {
+	if (oglobals->hups > 0 && oglobals->hups + pickups == len) {
 		rval = 0;
 	} else {
 		rval = 1;
@@ -2331,7 +2334,7 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *sess
 					q = !q;
 				}
 
-				if (end && p < end && *p == ',') {
+				if (end && p < end && *p == ',' && *(p-1) != '\\') {
 					
 					if (q || alt) {
 						*p = QUOTED_ESC_COMMA;
@@ -2377,8 +2380,9 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *sess
 
 				while (*chan_type == '[') {
 					char *parsed = NULL;
-					
-					for (p = chan_type; p && *p && *p != ']'; p++) {
+					char *bend = switch_find_end_paren(chan_type, '[', ']');					
+
+					for (p = chan_type + 1; p && p < bend && *p; p++) {
 						if (*p == QUOTED_ESC_COMMA) {
 							*p = ',';
 						}
@@ -2389,8 +2393,13 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *sess
 						switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Parse Error!\n");
 						switch_goto_status(SWITCH_STATUS_GENERR, done);
 					}
-					
-					chan_type = parsed;
+				
+					if (chan_type == parsed) {
+						switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Parse Error!\n");
+						switch_goto_status(SWITCH_STATUS_GENERR, done);						
+					} else {
+						chan_type = parsed;
+					}
 				}
 				
 				
@@ -2576,6 +2585,16 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *sess
 				if ((lc = switch_event_get_header(var_event, "local_var_clobber"))) {
 					local_clobber = switch_true(lc);
 				}
+
+				if (switch_channel_test_flag(originate_status[i].peer_channel, CF_NO_PRESENCE)) {
+					if (var_event) {
+						switch_event_del_header(var_event, "presence_id");
+					}
+					if (local_var_event) {
+						switch_event_del_header(local_var_event, "presence_id");
+					}
+				}
+
 
 				if (local_clobber) {
 					if (var_event) {
@@ -3597,6 +3616,10 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *sess
 			switch_channel_set_variable(caller_channel, SWITCH_ORIGINATE_SIGNAL_BOND_VARIABLE, NULL);
 		}
 		
+
+		switch_channel_execute_on(bchan, SWITCH_CHANNEL_EXECUTE_ON_POST_ORIGINATE_VARIABLE);
+		switch_channel_api_on(bchan, SWITCH_CHANNEL_API_ON_POST_ORIGINATE_VARIABLE);
+
 
 		while(switch_channel_state_change_pending(bchan)) {
 			switch_cond_next();

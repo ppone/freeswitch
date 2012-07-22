@@ -61,12 +61,8 @@
 #include "spandsp/timezone.h"
 #include "spandsp/t4_rx.h"
 #include "spandsp/t4_tx.h"
-#if defined(SPANDSP_SUPPORT_T42)  ||  defined(SPANDSP_SUPPORT_T43)  ||  defined(SPANDSP_SUPPORT_T85)
 #include "spandsp/t81_t82_arith_coding.h"
-#endif
-#if defined(SPANDSP_SUPPORT_T85)
 #include "spandsp/t85.h"
-#endif
 #if defined(SPANDSP_SUPPORT_T42)
 #include "spandsp/t42.h"
 #endif
@@ -83,12 +79,8 @@
 
 #include "spandsp/private/logging.h"
 #include "spandsp/private/timezone.h"
-#if defined(SPANDSP_SUPPORT_T42)  ||  defined(SPANDSP_SUPPORT_T43)  ||  defined(SPANDSP_SUPPORT_T85)
 #include "spandsp/private/t81_t82_arith_coding.h"
-#endif
-#if defined(SPANDSP_SUPPORT_T85)
 #include "spandsp/private/t85.h"
-#endif
 #if defined(SPANDSP_SUPPORT_T42)
 #include "spandsp/private/t42.h"
 #endif
@@ -398,8 +390,9 @@ static const struct
 static void queue_phase(t30_state_t *s, int phase);
 static void set_phase(t30_state_t *s, int phase);
 static void set_state(t30_state_t *s, int state);
-static void send_simple_frame(t30_state_t *s, int type);
+static void shut_down_hdlc_tx(t30_state_t *s);
 static void send_frame(t30_state_t *s, const uint8_t *fr, int frlen);
+static void send_simple_frame(t30_state_t *s, int type);
 static void send_dcn(t30_state_t *s);
 static void repeat_last_command(t30_state_t *s);
 static void disconnect(t30_state_t *s);
@@ -831,6 +824,13 @@ static void print_frame(t30_state_t *s, const char *io, const uint8_t *msg, int 
              t30_frametype(msg[2]),
              (msg[1] & 0x10)  ?  ""  :  "out");
     span_log_buf(&s->logging, SPAN_LOG_FLOW, io, msg, len);
+}
+/*- End of function --------------------------------------------------------*/
+
+static void shut_down_hdlc_tx(t30_state_t *s)
+{
+    if (s->send_hdlc_handler)
+        s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
 }
 /*- End of function --------------------------------------------------------*/
 
@@ -1344,7 +1344,6 @@ static int build_dcs(t30_state_t *s)
         set_ctrl_bits(s->dcs_frame, T30_MIN_SCAN_0MS, 21);
         break;
 #endif
-#if defined(SPANDSP_SUPPORT_T85)
     case T4_COMPRESSION_ITU_T85:
         set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_T85_MODE);
         clr_ctrl_bit(s->dcs_frame, T30_DCS_BIT_T85_L0_MODE);
@@ -1355,7 +1354,6 @@ static int build_dcs(t30_state_t *s)
         set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_T85_L0_MODE);
         set_ctrl_bits(s->dcs_frame, T30_MIN_SCAN_0MS, 21);
         break;
-#endif
     case T4_COMPRESSION_ITU_T6:
         set_ctrl_bit(s->dcs_frame, T30_DCS_BIT_T6_MODE);
         set_ctrl_bits(s->dcs_frame, T30_MIN_SCAN_0MS, 21);
@@ -1750,9 +1748,7 @@ static int send_dis_or_dtc_sequence(t30_state_t *s, int start)
             break;
         case 3:
             s->step++;
-            /* Shut down HDLC transmission. */
-            if (s->send_hdlc_handler)
-                s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
+            shut_down_hdlc_tx(s);
             break;
         default:
             return -1;
@@ -1805,9 +1801,7 @@ static int send_dis_or_dtc_sequence(t30_state_t *s, int start)
             break;
         case 8:
             s->step++;
-            /* Shut down HDLC transmission. */
-            if (s->send_hdlc_handler)
-                s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
+            shut_down_hdlc_tx(s);
             break;
         default:
             return -1;
@@ -1866,9 +1860,7 @@ static int send_dcs_sequence(t30_state_t *s, int start)
         break;
     case 7:
         s->step++;
-        /* Shut down HDLC transmission. */
-        if (s->send_hdlc_handler)
-            s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
+        shut_down_hdlc_tx(s);
         break;
     default:
         return -1;
@@ -2534,7 +2526,7 @@ static int process_rx_pps(t30_state_t *s, const uint8_t *msg, int len)
            we sent - which would have been a T30_MCF - If the block is for the previous
            page, or the previous block of the current page, we can assume we have hit this
            condition. */
-        if (((s->rx_page_number & 0xFF) == page  &&  (s->ecm_block & 0xFF) == block)
+        if (((s->rx_page_number & 0xFF) == page  &&  ((s->ecm_block - 1) & 0xFF) == block)
             ||
             (((s->rx_page_number - 1) & 0xFF) == page  &&  s->ecm_block == 0))
         {
@@ -2568,7 +2560,6 @@ static int process_rx_pps(t30_state_t *s, const uint8_t *msg, int len)
         for (j = 0;  j < 8;  j++)
         {
             frame_no = (i << 3) + j;
-#if defined(VET_ALL_FCD_FRAMES)
             if (s->ecm_len[frame_no] >= 0)
             {
                 /* The correct pattern of frame lengths is they will all be 64 or 256 octets long, except the
@@ -2598,7 +2589,6 @@ static int process_rx_pps(t30_state_t *s, const uint8_t *msg, int len)
                     }
                 }
             }            
-#endif
             if (s->ecm_len[frame_no] < 0)
             {
                 s->ecm_frame_map[i + 3] |= (1 << j);
@@ -2685,10 +2675,14 @@ static void process_rx_ppr(t30_state_t *s, const uint8_t *msg, int len)
     int frame_no;
     uint8_t frame[4];
 
-    if (len != 3 + 32)
+    if (len != 3 + 256/8)
     {
-        span_log(&s->logging, SPAN_LOG_FLOW, "Bad length for PPR bits - %d\n", len);
-        /* TODO: probably should send DCN */
+        span_log(&s->logging, SPAN_LOG_FLOW, "Bad length for PPR bits - %d\n", (len - 3)*8);
+        /* This frame didn't get corrupted in transit, because its CRC is OK. It was sent bad
+           and there is little possibility that causing a retransmission will help. It is best
+           to just give up. */ 
+        t30_set_status(s, T30_ERR_TX_ECMPHD);
+        disconnect(s);
         return;
     }
     /* Check which frames are OK, and mark them as OK. */
@@ -5639,7 +5633,7 @@ SPAN_DECLARE(int) t30_non_ecm_get_chunk(void *user_data, uint8_t buf[], int max_
         break;
     default:
         span_log(&s->logging, SPAN_LOG_WARNING, "t30_non_ecm_get_chunk in bad state %d\n", s->state);
-        len = 0;
+        len = -1;
         break;
     }
     return len;
@@ -5868,9 +5862,7 @@ SPAN_DECLARE(void) t30_front_end_status(void *user_data, int status)
         case T30_STATE_F_CFR:
             if (s->step == 0)
             {
-                /* Shut down HDLC transmission. */
-                if (s->send_hdlc_handler)
-                    s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
+                shut_down_hdlc_tx(s);
                 s->step++;
             }
             else
@@ -5892,9 +5884,7 @@ SPAN_DECLARE(void) t30_front_end_status(void *user_data, int status)
         case T30_STATE_F_FTT:
             if (s->step == 0)
             {
-                /* Shut down HDLC transmission. */
-                if (s->send_hdlc_handler)
-                    s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
+                shut_down_hdlc_tx(s);
                 s->step++;
             }
             else
@@ -5910,9 +5900,7 @@ SPAN_DECLARE(void) t30_front_end_status(void *user_data, int status)
         case T30_STATE_F_POST_RCP_MCF:
             if (s->step == 0)
             {
-                /* Shut down HDLC transmission. */
-                if (s->send_hdlc_handler)
-                    s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
+                shut_down_hdlc_tx(s);
                 s->step++;
             }
             else
@@ -5964,9 +5952,7 @@ SPAN_DECLARE(void) t30_front_end_status(void *user_data, int status)
         case T30_STATE_IV_CTC:
             if (s->step == 0)
             {
-                /* Shut down HDLC transmission. */
-                if (s->send_hdlc_handler)
-                    s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
+                shut_down_hdlc_tx(s);
                 s->step++;
             }
             else
@@ -5989,9 +5975,7 @@ SPAN_DECLARE(void) t30_front_end_status(void *user_data, int status)
         case T30_STATE_C:
             if (s->step == 0)
             {
-                /* Shut down HDLC transmission. */
-                if (s->send_hdlc_handler)
-                    s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
+                shut_down_hdlc_tx(s);
                 s->step++;
             }
             else
@@ -6049,9 +6033,7 @@ SPAN_DECLARE(void) t30_front_end_status(void *user_data, int status)
             {
                 if (send_next_ecm_frame(s))
                 {
-                    /* Shut down HDLC transmission. */
-                    if (s->send_hdlc_handler)
-                        s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
+                    shut_down_hdlc_tx(s);
                     s->step++;
                 }
             }
@@ -6070,9 +6052,7 @@ SPAN_DECLARE(void) t30_front_end_status(void *user_data, int status)
             /* This should be the end of a CTR being sent. */
             if (s->step == 0)
             {
-                /* Shut down HDLC transmission. */
-                if (s->send_hdlc_handler)
-                    s->send_hdlc_handler(s->send_hdlc_user_data, NULL, 0);
+                shut_down_hdlc_tx(s);
                 s->step++;
             }
             else
@@ -6347,11 +6327,11 @@ SPAN_DECLARE(int) t30_restart(t30_state_t *s)
 
 SPAN_DECLARE(t30_state_t *) t30_init(t30_state_t *s,
                                      int calling_party,
-                                     t30_set_handler_t *set_rx_type_handler,
+                                     t30_set_handler_t set_rx_type_handler,
                                      void *set_rx_type_user_data,
-                                     t30_set_handler_t *set_tx_type_handler,
+                                     t30_set_handler_t set_tx_type_handler,
                                      void *set_tx_type_user_data,
-                                     t30_send_hdlc_handler_t *send_hdlc_handler,
+                                     t30_send_hdlc_handler_t send_hdlc_handler,
                                      void *send_hdlc_user_data)
 {
     if (s == NULL)

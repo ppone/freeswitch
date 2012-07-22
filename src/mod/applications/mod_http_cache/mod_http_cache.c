@@ -24,6 +24,7 @@
  * Contributor(s):
  *
  * Christopher M. Rienzo <chris@rienzo.com>
+ * Darren Schreiber <d@d-man.org>
  *
  * Maintainer: Christopher M. Rienzo <chris@rienzo.com>
  *
@@ -190,12 +191,29 @@ static void url_cache_clear(url_cache_t *cache, switch_core_session_t *session);
 static switch_status_t http_put(url_cache_t *cache, switch_core_session_t *session, const char *url, const char *filename)
 {
 	switch_status_t status = SWITCH_STATUS_SUCCESS;
+
+	switch_curl_slist_t *headers = NULL;  /* optional linked-list of HTTP headers */
+	char *ext;  /* file extension, used for MIME type identification */
+	const char *mime_type = "application/octet-stream";
+	char *buf;
+
 	CURL *curl_handle = NULL;
 	long httpRes = 0;
 	struct stat file_info = {0};
 	FILE *file_to_put = NULL;
 	int fd;
-	
+
+	/* guess what type of mime content this is going to be */
+	if ((ext = strrchr(filename, '.'))) {
+		ext++;
+		if (!(mime_type = switch_core_mime_ext2type(ext))) {
+			mime_type = "application/octet-stream";
+		}
+	}
+
+	buf = switch_mprintf("Content-Type: %s", mime_type);
+	headers = switch_curl_slist_append(headers, buf);
+
 	/* open file and get the file size */
 	switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "opening %s for upload to %s\n", filename, url);
 	fd = open(filename, O_RDONLY);
@@ -226,6 +244,7 @@ static switch_status_t http_put(url_cache_t *cache, switch_core_session_t *sessi
 	switch_curl_easy_setopt(curl_handle, CURLOPT_UPLOAD, 1);
 	switch_curl_easy_setopt(curl_handle, CURLOPT_PUT, 1);
 	switch_curl_easy_setopt(curl_handle, CURLOPT_NOSIGNAL, 1);
+	switch_curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, headers);
 	switch_curl_easy_setopt(curl_handle, CURLOPT_URL, url);
 	switch_curl_easy_setopt(curl_handle, CURLOPT_READDATA, file_to_put);
 	switch_curl_easy_setopt(curl_handle, CURLOPT_INFILESIZE_LARGE, (curl_off_t)file_info.st_size);
@@ -259,6 +278,12 @@ done:
 	if (file_to_put) {
 		fclose(file_to_put);
 	}
+
+	if (headers) {
+		switch_curl_slist_free_all(headers);
+	}
+
+	switch_safe_free(buf);
 
 	return status;
 }
@@ -297,6 +322,7 @@ static size_t get_file_callback(void *ptr, size_t size, size_t nmemb, void *get)
 static char *trim(char *str)
 {
 	size_t len;
+	int i;
 
 	if (zstr(str)) {
 		return str;
@@ -304,7 +330,7 @@ static char *trim(char *str)
 	len = strlen(str);
 
 	/* strip whitespace from front */
-	for (int i = 0; i < len; i++) {
+	for (i = 0; i < len; i++) {
 		if (!isspace(str[i])) {
 			str = &str[i];
 			len -= i;
@@ -316,7 +342,7 @@ static char *trim(char *str)
 	}
 	
 	/* strip whitespace from end */
-	for (int i = len - 1; i >= 0; i--) {
+	for (i = len - 1; i >= 0; i--) {
 		if (!isspace(str[i])) {
 			break;
 		}
@@ -334,6 +360,7 @@ static void process_cache_control_header(cached_url_t *url, char *data)
 {
 	char *max_age_str;
 	switch_time_t max_age;
+	int i;
 
 	/* trim whitespace and check if empty */
 	data = trim(data);
@@ -352,7 +379,7 @@ static void process_cache_control_header(cached_url_t *url, char *data)
 	if (zstr(max_age_str)) {
 		return;
 	}
-	for (int i = 0; i < strlen(max_age_str); i++) {
+	for (i = 0; i < strlen(max_age_str); i++) {
 		if (!isdigit(max_age_str[i])) {
 			max_age_str[i] = '\0';
 			break;
@@ -433,10 +460,12 @@ static void url_cache_unlock(url_cache_t *cache, switch_core_session_t *session)
  */
 static void url_cache_clear(url_cache_t *cache, switch_core_session_t *session)
 {
+	int i;
+
 	url_cache_lock(cache, session);
 
 	// remove each cached URL from the hash and the queue
-	for (int i = 0; i < cache->queue.max_size; i++) {
+	for (i = 0; i < cache->queue.max_size; i++) {
 		cached_url_t *url = cache->queue.data[i];
 		if (url) {
 			switch_core_hash_delete(cache->map, url->url);
@@ -669,6 +698,7 @@ static cached_url_t *cached_url_create(url_cache_t *cache, const char *url)
 	char *dirname = NULL;
 	cached_url_t *u = NULL;
 	const char *file_extension = "";
+	const char *ext = NULL;
 
 	if (zstr(url)) {
 		return NULL;
@@ -687,7 +717,7 @@ static cached_url_t *cached_url_create(url_cache_t *cache, const char *url)
 	switch_dir_make_recursive(dirname, SWITCH_DEFAULT_DIR_PERMS, cache->pool);
 	
 	/* find extension on the end of URL */
-	for(const char *ext = &url[strlen(url) - 1]; ext != url; ext--) {
+	for (ext = &url[strlen(url) - 1]; ext != url; ext--) {
 		if (*ext == '/' || *ext == '\\') {
 			break;
 		}
@@ -800,10 +830,12 @@ static switch_status_t http_get(url_cache_t *cache, cached_url_t *url, switch_co
  */
 static void setup_dir(url_cache_t *cache)
 {
+	int i;
+
 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "setting up %s\n", cache->location);
 	switch_dir_make_recursive(cache->location, SWITCH_DEFAULT_DIR_PERMS, cache->pool);
 
-	for (int i = 0x00; i <= 0xff; i++) {
+	for (i = 0x00; i <= 0xff; i++) {
 		switch_dir_t *dir = NULL;
 		char *dirname = switch_mprintf("%s%s%02x", cache->location, SWITCH_PATH_SEPARATOR, i);
 		if (switch_dir_open(&dir, dirname, cache->pool) == SWITCH_STATUS_SUCCESS) {
@@ -902,7 +934,7 @@ SWITCH_STANDARD_API(http_cache_tryget)
 	switch_memory_pool_t *pool = NULL;
 	char *filename;
 
-	if (zstr(cmd) || strncmp("http://", cmd, strlen("http://"))) {
+	if (!isUrl(cmd)) {
 		stream->write_function(stream, "USAGE: %s\n", HTTP_GET_SYNTAX);
 		return SWITCH_STATUS_SUCCESS;
 	}
@@ -1128,6 +1160,8 @@ done:
 SWITCH_MODULE_LOAD_FUNCTION(mod_http_cache_load)
 {
 	switch_api_interface_t *api;
+	int i;
+
 	*module_interface = switch_loadable_module_create_module_interface(pool, modname);
 
 	SWITCH_ADD_API(api, "http_get", "HTTP GET", http_cache_get, HTTP_GET_SYNTAX);
@@ -1157,7 +1191,7 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_http_cache_load)
 
 	/* Start the prefetch threads */
 	switch_queue_create(&gcache.prefetch_queue, gcache.prefetch_queue_size, gcache.pool);
-	for (int i = 0; i < gcache.prefetch_thread_count; i++) {
+	for (i = 0; i < gcache.prefetch_thread_count; i++) {
 		int started = 0;
 		switch_thread_t *thread;
 		switch_threadattr_t *thd_attr = NULL;

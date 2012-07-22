@@ -285,7 +285,7 @@ SWITCH_STANDARD_API(shutdown_function)
 
 SWITCH_STANDARD_API(version_function)
 {
-	stream->write_function(stream, "FreeSWITCH Version %s\n", SWITCH_VERSION_FULL);
+	stream->write_function(stream, "FreeSWITCH Version %s (%s)\n", SWITCH_VERSION_FULL, SWITCH_VERSION_FULL_HUMAN);
 	return SWITCH_STATUS_SUCCESS;
 }
 
@@ -1728,6 +1728,7 @@ SWITCH_STANDARD_API(status_function)
 	char *http = NULL;
 	int sps = 0, last_sps = 0;
 	const char *var;
+	switch_size_t cur = 0, max = 0;
 
 	switch_core_measure_time(switch_core_uptime(), &duration);
 
@@ -1763,6 +1764,11 @@ SWITCH_STANDARD_API(status_function)
 	stream->write_function(stream, "%d session(s) %d/%d\n", switch_core_session_count(), last_sps, sps);
 	stream->write_function(stream, "%d session(s) max\n", switch_core_session_limit(0));
 	stream->write_function(stream, "min idle cpu %0.2f/%0.2f\n", switch_core_min_idle_cpu(-1.0), switch_core_idle_cpu());
+
+
+	if (switch_core_get_stacksizes(&cur, &max) == SWITCH_STATUS_SUCCESS) {
+		stream->write_function(stream, "Current Stack Size/Max %ldK/%ldK\n", cur / 1024, max / 1024);
+	}
 
 	if (html) {
 		stream->write_function(stream, "</b>\n");
@@ -1908,6 +1914,16 @@ SWITCH_STANDARD_API(ctl_function)
 			int x = 0;
 			switch_core_session_ctl(SCSC_DEBUG_SQL, &x);
 			stream->write_function(stream, "+OK SQL DEBUG [%s]\n", x ? "on" : "off");			
+
+		} else if (!strcasecmp(argv[0], "sql")) {
+			if (argv[1]) {
+				int x = 0;
+				if (!strcasecmp(argv[1], "start")) {
+					x = 1;
+				}
+				switch_core_session_ctl(SCSC_SQL, &x);
+				stream->write_function(stream, "+OK\n");			
+			}
 
 		} else if (!strcasecmp(argv[0], "reclaim_mem")) {
 			switch_core_session_ctl(SCSC_RECLAIM, &arg);

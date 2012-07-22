@@ -132,6 +132,17 @@ check_repo_clean () {
     || err "untracked files or build products present"
 }
 
+get_last_release_ver () {
+  grep -m1 -e '^AC_INIT' configure.in \
+    | cut -d, -f2 \
+    | sed -e 's/\[//' -e 's/\]//' -e 's/ //g'
+}
+
+get_nightly_version () {
+  local commit="$(git rev-list -n1 --abbrev=10 --abbrev-commit HEAD)"
+  echo "$(get_last_release_ver)+git~$(date +%Y%m%dT%H%M%SZ)~$commit"
+}
+
 create_orig () {
   {
     set -e
@@ -147,7 +158,7 @@ create_orig () {
     done
     shift $(($OPTIND-1))
     [ -z "$uver" ] || [ "$uver" = "nightly" ] \
-      && uver="$(cat build/next-release.txt)-n$(date +%Y%m%dT%H%M%SZ)"
+      && uver="$(get_nightly_version)"
     local treeish="$1" dver="$(mk_dver "$uver")"
     local orig="../freeswitch_$dver.orig.tar.xz"
     [ -n "$treeish" ] || treeish="HEAD"
@@ -165,6 +176,7 @@ create_orig () {
       git add -f libs
     fi
     ./build/set-fs-version.sh "$uver" && git add configure.in
+    echo "$uver" > .version && git add -f .version
     git commit --allow-empty -m "nightly v$uver"
     git archive -v \
       --worktree-attributes \
@@ -187,9 +199,10 @@ EOF
 create_dsc () {
   {
     set -e
-    local OPTIND OPTARG modules_list="" speed="normal"
-    while getopts 'm:s:' o "$@"; do
+    local OPTIND OPTARG modules_conf="" modules_list="" speed="normal"
+    while getopts 'f:m:s:' o "$@"; do
       case "$o" in
+        f) modules_conf="$OPTARG";;
         m) modules_list="$OPTARG";;
         s) speed="$OPTARG";;
       esac
@@ -201,6 +214,9 @@ create_dsc () {
     local dver="${orig_ver}-1~${distro}+1"
     [ -x "$(which dch)" ] \
       || err "package devscripts isn't installed"
+    if [ -n "$modules_conf" ]; then
+      cp $modules_conf debian/modules.conf
+    fi
     if [ -n "$modules_list" ]; then
       set_modules_${modules_list}
     fi
@@ -266,7 +282,10 @@ build_debs () {
       cow --create
     fi
     announce "Updating base $distro-$arch image..."
-    cow --update
+    local x=5
+    while ! cow --update; do
+      [ $x -lt 1 ] && break; sleep 60; x=$((x-1))
+    done
     announce "Building $distro-$arch DEBs from $dsc..."
     if $debug_hook; then
       mkdir -p .hooks
@@ -285,16 +304,18 @@ build_debs () {
 build_all () {
   local OPTIND OPTARG
   local orig_opts="" dsc_opts="" deb_opts=""
-  local archs="" distros="" par=false
-  while getopts 'a:bc:djnm:s:v:z:' o "$@"; do
+  local archs="" distros="" orig="" par=false
+  while getopts 'a:bc:df:jmno:s:v:z:' o "$@"; do
     case "$o" in
       a) archs="$archs $OPTARG";;
       b) orig_opts="$orig_opts -b";;
       c) distros="$distros $OPTARG";;
       d) deb_opts="$deb_opts -d";;
+      f) dsc_opts="$dsc_opts -f$OPTARG";;
       j) par=true;;
-      n) orig_opts="$orig_opts -n";;
       m) dsc_opts="$dsc_opts -m$OPTARG";;
+      n) orig_opts="$orig_opts -n";;
+      o) orig="$OPTARG";;
       s) dsc_opts="$dsc_opts -s$OPTARG";;
       v) orig_opts="$orig_opts -v$OPTARG";;
       z) orig_opts="$orig_opts -z$OPTARG";;
@@ -303,7 +324,7 @@ build_all () {
   shift $(($OPTIND-1))
   [ -n "$archs" ] || archs="amd64 i386"
   [ -n "$distros" ] || distros="sid wheezy squeeze"
-  local orig="$(create_orig $orig_opts HEAD | tail -n1)"
+  [ -n "$orig" ] || orig="$(create_orig $orig_opts HEAD | tail -n1)"
   mkdir -p ../log
   > ../log/changes
   echo; echo; echo; echo
@@ -353,10 +374,14 @@ commands:
     -b Bundle downloaded libraries in source package
     -c Specify distributions
     -d Enable cowbuilder debug hook
+    -f <modules.conf>
+      Build only modules listed in this file
     -j Build debs in parallel
-    -n Nightly build
     -m [ quicktest ]
       Choose custom list of modules to build
+    -n Nightly build
+    -o <orig-file>
+      Specify existing .orig.tar.xz file
     -s [ paranoid | reckless ]
       Set FS bootstrap/build -j flags
     -v Set version
@@ -372,6 +397,8 @@ commands:
 
   create-dsc <distro> <orig-file>
 
+    -f <modules.conf>
+      Build only modules listed in this file
     -m [ quicktest ]
       Choose custom list of modules to build
     -s [ paranoid | reckless ]

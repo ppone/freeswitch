@@ -1145,6 +1145,18 @@ SWITCH_STANDARD_APP(set_name_function)
 SWITCH_STANDARD_APP(answer_function)
 {
 	switch_channel_t *channel = switch_core_session_get_channel(session);
+	const char *arg = (char *) data;
+
+	if (zstr(arg)) {
+		arg = switch_channel_get_variable(channel, "answer_flags");
+	}
+
+	if (!zstr(arg)) {
+		if (switch_stristr("is_conference", arg)) {
+			switch_channel_set_flag(channel, CF_CONFERENCE);
+		}
+	}
+
 	switch_channel_answer(channel);
 }
 
@@ -1182,6 +1194,7 @@ SWITCH_STANDARD_APP(redirect_function)
 	msg.from = __FILE__;
 	msg.string_arg = data;
 	msg.message_id = SWITCH_MESSAGE_INDICATE_REDIRECT;
+	msg.numeric_arg = 1;
 	switch_core_session_receive_message(session, &msg);
 }
 
@@ -1239,6 +1252,7 @@ SWITCH_STANDARD_APP(respond_function)
 	msg.from = __FILE__;
 	msg.string_arg = data;
 	msg.message_id = SWITCH_MESSAGE_INDICATE_RESPOND;
+	msg.numeric_arg = -1;
 	switch_core_session_receive_message(session, &msg);
 }
 
@@ -2863,8 +2877,12 @@ SWITCH_STANDARD_APP(audio_bridge_function)
 			camp_data = (char *) data;
 		}
 
-		if (!(moh = switch_channel_get_hold_music(caller_channel))) {
-			moh = switch_channel_get_variable(caller_channel, "campon_hold_music");
+		if (!(moh = switch_channel_get_variable(caller_channel, "campon_hold_music"))) {
+			moh = switch_channel_get_hold_music(caller_channel);
+		}
+
+		if (!zstr(moh) && !strcasecmp(moh, "silence")) { 
+			moh = NULL;
 		}
 
 		do {
@@ -3492,7 +3510,7 @@ static switch_call_cause_t pickup_outgoing_channel(switch_core_session_t *sessio
 
 	tech_pvt = switch_core_session_alloc(nsession, sizeof(*tech_pvt));
 	tech_pvt->key = switch_core_session_strdup(nsession, pickup);
-	switch_event_dup(&tech_pvt->vars, var_event);
+
 
 	switch_core_session_set_private(nsession, tech_pvt);
 	
@@ -3509,9 +3527,16 @@ static switch_call_cause_t pickup_outgoing_channel(switch_core_session_t *sessio
 	name = switch_core_session_sprintf(nsession, "pickup/%s", pickup);
 	switch_channel_set_name(nchannel, name);
 	switch_channel_set_variable(nchannel, "process_cdr", "false");
+	switch_channel_set_variable(nchannel, "presence_id", NULL);
+
+	switch_event_del_header(var_event, "presence_id");
+
 	pickup_add_session(nsession, pickup);
 	switch_channel_set_flag(nchannel, CF_PICKUP);
-	
+	switch_channel_set_flag(nchannel, CF_NO_PRESENCE);
+
+	switch_event_dup(&tech_pvt->vars, var_event);
+
 	goto done;
 
   error:
@@ -3559,7 +3584,7 @@ SWITCH_STANDARD_APP(pickup_function)
 			
 			switch_channel_set_flag(pickup_channel, CF_CHANNEL_SWAP);
 			switch_channel_set_variable(pickup_channel, "channel_swap_uuid", switch_core_session_get_uuid(session));
-
+			
 			name = caller_profile->caller_id_name;
 			num = caller_profile->caller_id_number;
 

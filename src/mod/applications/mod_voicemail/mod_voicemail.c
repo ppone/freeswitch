@@ -1815,6 +1815,7 @@ static void update_mwi(vm_profile_t *profile, const char *id, const char *domain
 	int total_new_urgent_messages = 0;
 	int total_saved_urgent_messages = 0;
 	switch_event_t *event;
+	switch_event_t *message_event;
 
 	message_count(profile, id, domain_name, myfolder, &total_new_messages, &total_saved_messages, &total_new_urgent_messages,
 				  &total_saved_urgent_messages);
@@ -1831,6 +1832,18 @@ static void update_mwi(vm_profile_t *profile, const char *id, const char *domain
 	switch_event_add_header(event, SWITCH_STACK_BOTTOM, "MWI-Voice-Message", "%d/%d (%d/%d)", total_new_messages, total_saved_messages,
 							total_new_urgent_messages, total_saved_urgent_messages);
 	switch_event_fire(&event);
+
+
+	switch_event_create_subclass(&message_event, SWITCH_EVENT_CUSTOM, VM_EVENT_MAINT);
+	switch_event_add_header_string(message_event, SWITCH_STACK_BOTTOM, "VM-Action", "mwi-update");
+	switch_event_add_header_string(message_event, SWITCH_STACK_BOTTOM, "VM-User", id);
+	switch_event_add_header_string(message_event, SWITCH_STACK_BOTTOM, "VM-Domain", domain_name);
+	switch_event_add_header(message_event, SWITCH_STACK_BOTTOM, "VM-Total-New", "%d", total_new_messages);
+	switch_event_add_header(message_event, SWITCH_STACK_BOTTOM, "VM-Total-Saved", "%d", total_saved_messages);
+	switch_event_add_header(message_event, SWITCH_STACK_BOTTOM, "VM-Total-New-Urgent", "%d", total_new_urgent_messages);
+	switch_event_add_header(message_event, SWITCH_STACK_BOTTOM, "VM-Total-Saved-Urgent", "%d", total_saved_urgent_messages);
+
+	switch_event_fire(&message_event);
 }
 
 
@@ -2535,7 +2548,10 @@ static void voicemail_check_main(switch_core_session_t *session, vm_profile_t *p
 		if (authed) {
 			switch_channel_set_variable(channel, "user_pin_authenticated", "true");
 			switch_channel_set_variable(channel, "user_pin_authenticated_user", myid);
-			if (!zstr(myid)) switch_ivr_set_user(session, myid);
+			if (!zstr(myid) && !zstr(domain_name)) {
+				char *account = switch_core_session_sprintf(session, "%s@%s", myid, domain_name);
+				switch_ivr_set_user(session, account);
+			}
 		} else {
 			switch_channel_hangup(channel, SWITCH_CAUSE_USER_CHALLENGE);
 		}
@@ -3522,11 +3538,11 @@ SWITCH_STANDARD_APP(voicemail_function)
 		if (argv[x] && !strcasecmp(argv[x], "check")) {
 			check++;
 			x++;
-		} else if (argv[x] && !strcasecmp(argv[x], "auth")) {
-			auth++;
-			x++;
 		} else if (argv[x] && !strcasecmp(argv[x], "auth_only")) {
 			auth = 2;
+			x++;
+		} else if (argv[x] && !strcasecmp(argv[x], "auth")) {
+			auth++;
 			x++;
 		} else {
 			break;
@@ -3571,7 +3587,7 @@ SWITCH_STANDARD_APP(voicemail_function)
 		return;
 	}
 
-	if (check) {
+	if (check || auth == 2) {
 		if (argv[x]) {
 			uuid = argv[x++];
 		}

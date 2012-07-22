@@ -9,6 +9,8 @@
 #include <sys/wait.h>
 #include <time.h>
 
+static int show_unclean = 0;
+
 static int sys(char *buf, int buflen, char *cmd) {
   int i, p[2];
   if (pipe(p)) return 255;
@@ -40,7 +42,7 @@ static int sys1(char *buf, int buflen, char *cmd) {
   return 0;
 }
 
-int main(int argc, char **argv) {
+static int print_version(void) {
   char xver[256], xdate[256], xfdate[256], xcommit[256];
   time_t xdate_t; struct tm *xdate_tm;
   if ((sys1(xdate,sizeof(xdate),"git log -n1 --format='%ct' HEAD"))) return 1;
@@ -50,7 +52,7 @@ int main(int argc, char **argv) {
   if ((sys1(xcommit,sizeof(xcommit),"git rev-list -n1 --abbrev=10 --abbrev-commit HEAD")))
     return 1;
   snprintf(xver,sizeof(xver),"+git~%s~%s",xfdate,xcommit);
-  if ((sys(NULL,0,"git diff-index --quiet HEAD"))) {
+  if (show_unclean && (sys(NULL,0,"git diff-index --quiet HEAD"))) {
     char buf[256], now[256]; time_t now_t=time(NULL); struct tm *now_tm;
     if (!(now_tm=gmtime(&now_t))) return 1;
     strftime(now,sizeof(now),"%Y%m%dT%H%M%SZ",now_tm);
@@ -59,5 +61,33 @@ int main(int argc, char **argv) {
   }
   printf("%s\n",xver);
   return 0;
+}
+
+static int print_human_version(void) {
+  char xver[256], xdate[256], xfdate[256], xcommit[256];
+  time_t xdate_t; struct tm *xdate_tm;
+  if ((sys1(xdate,sizeof(xdate),"git log -n1 --format='%ct' HEAD"))) return 1;
+  xdate_t=(time_t)atoi(xdate);
+  if (!(xdate_tm=gmtime(&xdate_t))) return 1;
+  strftime(xfdate,sizeof(xfdate),"%a, %d %b %Y %H:%M:%S Z",xdate_tm);
+  if ((sys1(xcommit,sizeof(xcommit),"git rev-list -n1 --abbrev=10 --abbrev-commit HEAD")))
+    return 1;
+  snprintf(xver,sizeof(xver),"; git at commit %s on %s",xcommit,xfdate);
+  if (show_unclean && (sys(NULL,0,"git diff-index --quiet HEAD"))) {
+    char buf[256], now[256]; time_t now_t=time(NULL); struct tm *now_tm;
+    if (!(now_tm=gmtime(&now_t))) return 1;
+    strftime(now,sizeof(now),"%a, %d %b %Y %H:%M:%S Z",now_tm);
+    snprintf(buf,sizeof(buf),"%s; unclean git build on %s",xver,now);
+    strncpy(xver,buf,sizeof(xver));
+  }
+  printf("%s\n",xver);
+  return 0;
+}
+
+int main(int argc, char **argv) {
+  if (argc > 1 && !strcasecmp(argv[1],"-h"))
+    return print_human_version();
+  else
+    return print_version();
 }
 
