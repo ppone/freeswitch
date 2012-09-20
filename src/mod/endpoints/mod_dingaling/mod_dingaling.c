@@ -1061,6 +1061,11 @@ static void try_secure(struct private_object *tech_pvt, ldl_transport_type_t tty
 	}
 
 
+	if (tech_pvt->transports[ttype].crypto_recv_type) {
+		tech_pvt->transports[ttype].crypto_type = tech_pvt->transports[ttype].crypto_recv_type;
+	}
+
+
 	//if (tech_pvt->transports[ttype].crypto_type) {
 		switch_rtp_add_crypto_key(tech_pvt->transports[ttype].rtp_session, 
 								  SWITCH_RTP_CRYPTO_SEND, 1, tech_pvt->transports[ttype].crypto_type, 
@@ -1682,7 +1687,7 @@ static void setup_codecs(struct private_object *tech_pvt)
 	}
 
 
-	if (!payloads[1].id) {
+	if (!payloads[1].id && tech_pvt->transports[LDL_TPORT_VIDEO_RTP].local_port) {
 		switch_rtp_release_port(tech_pvt->profile->ip, tech_pvt->transports[LDL_TPORT_VIDEO_RTP].local_port);
 		tech_pvt->transports[LDL_TPORT_VIDEO_RTP].local_port = 0;
 	}
@@ -2846,7 +2851,7 @@ static void set_profile_val(mdl_profile_t *profile, char *var, char *val)
 		} else if (val && !strcasecmp(val, "md5")) {
 			profile->user_flags |= LDL_FLAG_SASL_MD5;
 		}
-	} else if (!strcasecmp(var, "use-jingle") && !zstr(val)) {
+	} else if (!strcasecmp(var, "use-jingle") && switch_true(val)) {
 		profile->user_flags |= LDL_FLAG_JINGLE;
 	} else if (!strcasecmp(var, "exten") && !zstr(val)) {
 		profile->exten = switch_core_strdup(module_pool, val);
@@ -4098,10 +4103,10 @@ static ldl_status handle_signalling(ldl_handle_t *handle, ldl_session_t *dlsessi
 				tech_pvt->transports[LDL_TPORT_VIDEO_RTP].codec_index = -1;
 				tech_pvt->profile = profile;
 
-
+				switch_set_flag(tech_pvt, TFLAG_SECURE);
 				mdl_build_crypto(tech_pvt, LDL_TPORT_RTP, 1, AES_CM_128_HMAC_SHA1_80, SWITCH_RTP_CRYPTO_SEND);
 				mdl_build_crypto(tech_pvt, LDL_TPORT_VIDEO_RTP, 1, AES_CM_128_HMAC_SHA1_80, SWITCH_RTP_CRYPTO_SEND);
-				switch_set_flag(tech_pvt, TFLAG_SECURE);
+
 
 				if (!(tech_pvt->transports[LDL_TPORT_RTP].local_port = switch_rtp_request_port(profile->ip))) {
 					switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_CRIT, "No RTP port available!\n");

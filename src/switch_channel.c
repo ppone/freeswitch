@@ -34,6 +34,7 @@
 #include <switch.h>
 #include <switch_channel.h>
 
+
 struct switch_cause_table {
 	const char *name;
 	switch_call_cause_t cause;
@@ -154,8 +155,13 @@ struct switch_channel {
 	switch_event_t *app_list;
 	switch_event_t *api_list;
 	switch_event_t *var_list;
+	switch_hold_record_t *hold_record;
 };
 
+SWITCH_DECLARE(switch_hold_record_t *) switch_channel_get_hold_record(switch_channel_t *channel)
+{
+	return channel->hold_record;
+}
 
 SWITCH_DECLARE(const char *) switch_channel_cause2str(switch_call_cause_t cause)
 {
@@ -575,10 +581,15 @@ SWITCH_DECLARE(void) switch_channel_uninit(switch_channel_t *channel)
 	while (switch_queue_trypop(channel->dtmf_log_queue, &pop) == SWITCH_STATUS_SUCCESS) {
 		switch_safe_free(pop);
 	}
-	switch_core_hash_destroy(&channel->private_hash);
+
+	if (channel->private_hash) {
+		switch_core_hash_destroy(&channel->private_hash);
+	}
+
 	if (channel->app_flag_hash) {
 		switch_core_hash_destroy(&channel->app_flag_hash);
 	}
+
 	switch_mutex_lock(channel->profile_mutex);
 	switch_event_destroy(&channel->variables);
 	switch_event_destroy(&channel->api_list);
@@ -716,6 +727,16 @@ SWITCH_DECLARE(const char *) switch_channel_get_hold_music(switch_channel_t *cha
 	if (!(var = switch_channel_get_variable(channel, SWITCH_TEMP_HOLD_MUSIC_VARIABLE))) {
 		var = switch_channel_get_variable(channel, SWITCH_HOLD_MUSIC_VARIABLE);
 	}
+
+	if (!zstr(var)) {
+		char *expanded = switch_channel_expand_variables(channel, var);
+		
+		if (expanded != var) {
+			var = switch_core_session_strdup(channel->session, expanded);
+			free(expanded);
+		}
+	}
+
 
 	return var;
 }
@@ -1595,9 +1616,24 @@ SWITCH_DECLARE(void) switch_channel_set_flag_value(switch_channel_t *channel, sw
 	switch_mutex_unlock(channel->flag_mutex);
 
 	if (HELD) {
+		switch_hold_record_t *hr;
+		const char *brto = switch_channel_get_partner_uuid(channel);
+
 		switch_channel_set_callstate(channel, CCS_HELD);
 		switch_mutex_lock(channel->profile_mutex);
 		channel->caller_profile->times->last_hold = switch_time_now();
+
+		hr = switch_core_session_alloc(channel->session, sizeof(*hr));
+		hr->on = switch_time_now();
+		if (brto) {
+			hr->uuid = switch_core_session_strdup(channel->session, brto);
+		}
+																							
+		if (channel->hold_record) {
+			hr->next = channel->hold_record;
+		}
+		channel->hold_record = hr;
+
 		switch_mutex_unlock(channel->profile_mutex);
 	}
 
@@ -1747,6 +1783,11 @@ SWITCH_DECLARE(void) switch_channel_clear_flag(switch_channel_t *channel, switch
 		if (channel->caller_profile->times->last_hold) {
 			channel->caller_profile->times->hold_accum += (switch_time_now() - channel->caller_profile->times->last_hold);
 		}
+
+		if (channel->hold_record) {
+			channel->hold_record->off = switch_time_now();
+		}
+
 		switch_mutex_unlock(channel->profile_mutex);
 	}
 
@@ -2889,6 +2930,12 @@ SWITCH_DECLARE(switch_channel_state_t) switch_channel_perform_hangup(switch_chan
 		switch_event_t *event;
 		const char *var;
 
+		switch_mutex_lock(channel->profile_mutex);
+		if (channel->hold_record && !channel->hold_record->off) {
+			channel->hold_record->off = switch_time_now();
+		}
+		switch_mutex_unlock(channel->profile_mutex);
+
 		switch_mutex_lock(channel->state_mutex);
 		last_state = channel->state;
 		channel->state = CS_HANGUP;
@@ -2937,8 +2984,7 @@ SWITCH_DECLARE(switch_status_t) switch_channel_perform_mark_ring_ready_value(swi
 {
 	switch_event_t *event;
 
-	if (!switch_channel_test_flag(channel, CF_RING_READY) && 
-		!switch_channel_test_flag(channel, CF_EARLY_MEDIA) && !switch_channel_test_flag(channel, CF_ANSWERED)) {
+	if (!switch_channel_test_flag(channel, CF_RING_READY) && !switch_channel_test_flag(channel, CF_ANSWERED)) {
 		switch_log_printf(SWITCH_CHANNEL_ID_LOG, file, func, line, switch_channel_get_uuid(channel), SWITCH_LOG_NOTICE, "Ring-Ready %s!\n", channel->name);
 		switch_channel_set_flag_value(channel, CF_RING_READY, rv);
 		if (channel->caller_profile && channel->caller_profile->times) {
@@ -3581,7 +3627,7 @@ SWITCH_DECLARE(char *) switch_channel_expand_variables_check(switch_channel_t *c
 
 					if ((sub_val = (char *) switch_channel_get_variable_dup(channel, vname, SWITCH_TRUE, idx))) {
 						if (var_list && !switch_event_check_permission_list(var_list, vname)) {
-							sub_val = "INVALID";
+							sub_val = "<Variable Expansion Permission Denied>";
 						}
 
 						if ((expanded_sub_val = switch_channel_expand_variables_check(channel, sub_val, var_list, api_list, recur+1)) == sub_val) {
@@ -3635,9 +3681,9 @@ SWITCH_DECLARE(char *) switch_channel_expand_variables_check(switch_channel_t *c
 							vval = expanded;
 						}
 
-						if (api_list && !switch_event_check_permission_list(api_list, vname)) {
-							func_val = "INVALID";
-							sub_val = "INVALID";
+						if (!switch_core_test_flag(SCF_API_EXPANSION) || (api_list && !switch_event_check_permission_list(api_list, vname))) {
+							func_val = NULL;
+							sub_val = "<API Execute Permission Denied>";
 						} else {
 							if (switch_api_execute(vname, vval, channel->session, &stream) == SWITCH_STATUS_SUCCESS) {
 								func_val = stream.data;
@@ -3984,6 +4030,23 @@ SWITCH_DECLARE(switch_status_t) switch_channel_set_timestamps(switch_channel_t *
 			switch_time_exp_lt(&tm, caller_profile->times->progress_media);
 			switch_strftime_nocheck(progress_media, &retsize, sizeof(progress_media), fmt, &tm);
 			switch_channel_set_variable(channel, "progress_media_stamp", progress_media);
+		}
+
+		if (channel->hold_record) {
+			switch_hold_record_t *hr;
+			switch_stream_handle_t stream = { 0 };
+
+			SWITCH_STANDARD_STREAM(stream);
+
+			stream.write_function(&stream, "{", SWITCH_VA_NONE);
+
+			for (hr = channel->hold_record; hr; hr = hr->next) {
+				stream.write_function(&stream, "{%"SWITCH_TIME_T_FMT",%"SWITCH_TIME_T_FMT"},", hr->on, hr->off);
+			}
+			end_of((char *)stream.data) = '}';
+
+			switch_channel_set_variable(channel, "hold_events", (char *)stream.data);
+			free(stream.data);
 		}
 
 		switch_time_exp_lt(&tm, caller_profile->times->hungup);

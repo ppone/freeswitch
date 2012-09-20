@@ -553,12 +553,18 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_parse_event(switch_core_session_t *se
 
 			switch_channel_clear_flag(channel, CF_STOP_BROADCAST);
 
-			if (switch_channel_test_flag(channel, CF_BROADCAST)) {
+			if (!switch_channel_test_flag(channel, CF_BRIDGED) || switch_channel_test_flag(channel, CF_BROADCAST)) {
 				inner++;
 				hold_bleg = NULL;
-			} else {
+			} 
+
+			if (!switch_channel_test_flag(channel, CF_BROADCAST)) {
 				switch_channel_set_flag(channel, CF_BROADCAST);
+				if (inner) {
+					inner--;
+				}
 			}
+
 			if (hold_bleg && switch_true(hold_bleg)) {
 				if ((b_uuid = switch_channel_get_partner_uuid(channel))) {
 					const char *stream;
@@ -607,7 +613,7 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_parse_event(switch_core_session_t *se
 
 				if (switch_core_session_execute_application(session, app_name, app_arg) != SWITCH_STATUS_SUCCESS) {
 					if (!inner || switch_channel_test_flag(channel, CF_STOP_BROADCAST)) switch_channel_clear_flag(channel, CF_BROADCAST);
-					goto done;
+					break;
 				}
 
 				aftr = switch_micro_time_now();
@@ -625,8 +631,12 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_parse_event(switch_core_session_t *se
 				}
 			}
 
-			if (!inner || switch_channel_test_flag(channel, CF_STOP_BROADCAST)) {
-				switch_channel_clear_flag(channel, CF_BROADCAST); 
+			if (!inner) {
+				switch_channel_clear_flag(channel, CF_BROADCAST);
+			}
+
+			if (switch_channel_test_flag(channel, CF_STOP_BROADCAST)) {
+				switch_channel_clear_flag(channel, CF_BROADCAST);
 				switch_channel_set_flag(channel, CF_BREAK); 
 			}
 			
@@ -1690,6 +1700,9 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_session_transfer(switch_core_session_
 
 		switch_channel_set_variable(channel, SWITCH_SIGNAL_BOND_VARIABLE, NULL);
 
+		/* Set CF_TRANSFER flag before hanging up bleg to avoid race condition */
+		switch_channel_set_flag(channel, CF_TRANSFER);
+
 		/* If HANGUP_AFTER_BRIDGE is set to 'true', SWITCH_SIGNAL_BRIDGE_VARIABLE 
 		 * will not have a value, so we need to check SWITCH_BRIDGE_VARIABLE */
 
@@ -1725,8 +1738,7 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_session_transfer(switch_core_session_
 		}
 
 		switch_channel_set_caller_profile(channel, new_profile);
-		switch_channel_set_flag(channel, CF_TRANSFER);
-		
+
 		switch_channel_set_state(channel, CS_ROUTING);
 
 		msg.message_id = SWITCH_MESSAGE_INDICATE_TRANSFER;
@@ -2183,11 +2195,12 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_generate_xml_cdr(switch_core_session_
 	switch_channel_t *channel = switch_core_session_get_channel(session);
 	switch_caller_profile_t *caller_profile;
 	switch_xml_t variables, cdr, x_main_cp, x_caller_profile, x_caller_extension, x_times, time_tag,
-		x_application, x_callflow, x_inner_extension, x_apps, x_o, x_channel_data, x_field;
+		x_application, x_callflow, x_inner_extension, x_apps, x_o, x_channel_data, x_field, xhr, x_hold;
 	switch_app_log_t *app_log;
 	char tmp[512], *f;
 	int cdr_off = 0, v_off = 0, cd_off = 0;
-
+	switch_hold_record_t *hold_record = switch_channel_get_hold_record(channel), *hr;
+	
 	if (*xml_cdr) {
 		cdr = *xml_cdr;
 	} else {
@@ -2195,6 +2208,8 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_generate_xml_cdr(switch_core_session_
 			return SWITCH_STATUS_SUCCESS;
 		}
 	}
+
+	switch_xml_set_attr_d(cdr, "core-uuid", switch_core_get_uuid());
 
 	if (!(x_channel_data = switch_xml_add_child_d(cdr, "channel_data", cdr_off++))) {
 		goto error;
@@ -2251,6 +2266,36 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_generate_xml_cdr(switch_core_session_
 			switch_xml_set_attr_d_buf(x_application, "app_stamp", tmp);
 		}
 	}
+
+	if (hold_record) {
+		int cf_off = 0;
+
+		if (!(xhr = switch_xml_add_child_d(cdr, "hold-record", cdr_off++))) {
+			goto error;
+		}
+
+		for (hr = hold_record; hr; hr = hr->next) {
+			char *t = tmp;
+			if (!(x_hold = switch_xml_add_child_d(xhr, "hold", cf_off++))) {
+				goto error;
+			}
+
+			switch_snprintf(tmp, sizeof(tmp), "%" SWITCH_TIME_T_FMT, hr->on);
+			switch_xml_set_attr_d(x_hold, "on", t);
+
+			switch_snprintf(tmp, sizeof(tmp), "%" SWITCH_TIME_T_FMT, hr->off);
+			switch_xml_set_attr_d(x_hold, "off", t);
+
+			if (hr->uuid) {
+				switch_xml_set_attr_d(x_hold, "bridged-to", hr->uuid);
+			}
+
+
+		}
+
+
+	}
+
 
 
 	caller_profile = switch_channel_get_caller_profile(channel);

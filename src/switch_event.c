@@ -34,6 +34,7 @@
 
 #include <switch.h>
 #include <switch_event.h>
+#include "tpl.h"
 
 //#define SWITCH_EVENT_RECYCLE
 #define DISPATCH_QUEUE_LEN 100
@@ -306,14 +307,14 @@ static switch_status_t switch_event_queue_dispatch_event(switch_event_t **eventp
 		if (switch_queue_size(EVENT_DISPATCH_QUEUE) > (unsigned int)(DISPATCH_QUEUE_LEN * DISPATCH_THREAD_COUNT)) {
 			launch++;
 		}
+
+		switch_mutex_unlock(EVENT_QUEUE_MUTEX);
 		
 		if (launch) {
 			if (SOFT_MAX_DISPATCH + 1 < MAX_DISPATCH) {
 				switch_event_launch_dispatch_threads(SOFT_MAX_DISPATCH + 1);
 			}
 		}
-
-		switch_mutex_unlock(EVENT_QUEUE_MUTEX);
 
 		*eventp = NULL;
 		switch_queue_push(EVENT_DISPATCH_QUEUE, event);
@@ -538,7 +539,6 @@ SWITCH_DECLARE(void) switch_event_launch_dispatch_threads(uint32_t max)
 
 	for (index = SOFT_MAX_DISPATCH; index < max && index < MAX_DISPATCH; index++) {
 		if (EVENT_DISPATCH_QUEUE_THREADS[index]) {
-			printf("Index exists continue\n");
 			continue;
 		}
 
@@ -1022,6 +1022,7 @@ static switch_status_t switch_event_base_add_header(switch_event_t *event, switc
 		}
 
 	} else {
+		switch_safe_free(header->value);
 		header->value = data;
 	}
 
@@ -1283,6 +1284,97 @@ SWITCH_DECLARE(switch_status_t) switch_event_dup_reply(switch_event_t **event, s
 
 	return SWITCH_STATUS_SUCCESS;
 }
+
+#define SWITCH_SERIALIZED_EVENT_MAP "S(iiisss)A(S(ss))"
+
+SWITCH_DECLARE(switch_status_t) switch_event_binary_deserialize(switch_event_t **eventp, void **data, switch_size_t len, switch_bool_t destroy)
+{
+	switch_event_t *event;
+	tpl_node *tn;
+	switch_serial_event_t e;
+	switch_serial_event_header_t sh;
+	int how = TPL_MEM;
+
+	switch_event_create(&event, SWITCH_EVENT_CLONE);
+	switch_assert(event);
+
+	tn = tpl_map(SWITCH_SERIALIZED_EVENT_MAP, &e, &sh);
+
+	if (!destroy) {
+		how |= TPL_EXCESS_OK;
+	}
+
+	tpl_load(tn, how, data, len);
+
+	tpl_unpack(tn, 0);
+
+	event->event_id = e.event_id;
+	event->priority = e.priority;
+	event->flags = e.flags;
+
+	event->owner = e.owner;
+	event->subclass_name = e.subclass_name;
+	event->body = e.body;
+
+
+	while(tpl_unpack(tn, 1)) {
+		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, sh.name, sh.value);
+	}
+
+	*eventp = event;
+
+	tpl_free(tn);
+
+	if (destroy) {
+		free(*data);
+	}
+
+	*data = NULL;
+
+	return SWITCH_STATUS_SUCCESS;
+
+}
+
+SWITCH_DECLARE(switch_status_t) switch_event_binary_serialize(switch_event_t *event, void **data, switch_size_t *len)
+{
+	tpl_node *tn;
+	switch_serial_event_t e;
+	switch_serial_event_header_t sh;
+	switch_event_header_t *eh;
+	int how = TPL_MEM;
+
+	e.event_id = event->event_id;
+	e.priority = event->priority;
+	e.flags = event->flags;
+
+	e.owner = event->owner;
+	e.subclass_name = event->subclass_name;
+	e.body = event->body;
+
+	tn = tpl_map(SWITCH_SERIALIZED_EVENT_MAP, &e, &sh);
+
+	tpl_pack(tn, 0);
+	
+	for (eh = event->headers; eh; eh = eh->next) {
+		if (eh->idx) continue;  // no arrays yet
+	
+		sh.name = eh->name;
+		sh.value = eh->value;
+		
+		tpl_pack(tn, 1);
+	}
+
+	if (*len > 0) {
+		how |= TPL_PREALLOCD;
+	}
+
+	tpl_dump(tn, how, data, len);
+
+	tpl_free(tn);
+
+	return SWITCH_STATUS_SUCCESS;
+}
+
 
 SWITCH_DECLARE(switch_status_t) switch_event_serialize(switch_event_t *event, char **str, switch_bool_t encode)
 {
@@ -2109,7 +2201,7 @@ SWITCH_DECLARE(char *) switch_event_expand_headers_check(switch_event_t *event, 
 						}
 
 						if (var_list && !switch_event_check_permission_list(var_list, vname)) {
-							sub_val = "INVALID";
+							sub_val = "<Variable Expansion Permission Denied>";
 						}
 
 
@@ -2161,9 +2253,9 @@ SWITCH_DECLARE(char *) switch_event_expand_headers_check(switch_event_t *event, 
 							vval = expanded;
 						}
 
-						if (api_list && !switch_event_check_permission_list(api_list, vname)) {
-							func_val = "INVALID";
-							sub_val = "INVALID";
+						if (!switch_core_test_flag(SCF_API_EXPANSION) || (api_list && !switch_event_check_permission_list(api_list, vname))) {
+							func_val = NULL;
+							sub_val = "<API execute Permission Denied>";
 						} else {
 							if (switch_api_execute(vname, vval, NULL, &stream) == SWITCH_STATUS_SUCCESS) {
 								func_val = stream.data;

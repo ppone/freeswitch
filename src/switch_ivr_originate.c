@@ -191,6 +191,7 @@ static void *SWITCH_THREAD_FUNC collect_thread_run(switch_thread_t *thread, void
 
 		if (switch_channel_up_nosig(channel)) {
 			switch_channel_set_flag(channel, CF_WINNER);
+			switch_channel_set_variable(channel, "group_dial_status", "winner");
 		}
 		goto wbreak;
 	}
@@ -225,6 +226,7 @@ static void *SWITCH_THREAD_FUNC collect_thread_run(switch_thread_t *thread, void
 		
 		if (!strcmp(collect->key, buf)) {
 			switch_channel_set_flag(channel, CF_WINNER);
+			switch_channel_set_variable(channel, "group_dial_status", "winner");
 			goto wbreak;
 		} else if (collect->error_file) {
 			switch_ivr_play_file(collect->session, NULL, collect->error_file, NULL);
@@ -421,7 +423,7 @@ static void inherit_codec(switch_channel_t *caller_channel, switch_core_session_
 	}
 }
 
-static uint8_t check_channel_status(originate_global_t *oglobals, originate_status_t *originate_status, uint32_t len)
+static uint8_t check_channel_status(originate_global_t *oglobals, originate_status_t *originate_status, uint32_t len, switch_call_cause_t *force_reason)
 {
 
 	uint32_t i;
@@ -694,6 +696,20 @@ static uint8_t check_channel_status(originate_global_t *oglobals, originate_stat
 			}
 		}
 
+		if (switch_channel_test_flag(originate_status[i].peer_channel, CF_EARLY_OK)) {
+			if (!oglobals->early_ok) {
+				oglobals->early_ok = 1;
+			}
+			switch_channel_clear_flag(originate_status[i].peer_channel, CF_EARLY_OK);
+		}
+
+		if (caller_channel && switch_channel_test_flag(caller_channel, CF_EARLY_OK)) {
+			if (!oglobals->early_ok) {
+				oglobals->early_ok = 1;
+			}
+			switch_channel_clear_flag(caller_channel, CF_EARLY_OK);
+		}
+
 		state = switch_channel_get_state(originate_status[i].peer_channel);
 		if (state >= CS_HANGUP || state == CS_RESET || switch_channel_test_flag(originate_status[i].peer_channel, CF_TRANSFER) ||
 			switch_channel_test_flag(originate_status[i].peer_channel, CF_REDIRECT) ||
@@ -763,6 +779,16 @@ static uint8_t check_channel_status(originate_global_t *oglobals, originate_stat
 	}
 
   end:
+
+	if (rval == 0 && pickups) {
+		for (i = 0; i < len; i++) {
+			if (originate_status[i].peer_channel && switch_channel_test_flag(originate_status[i].peer_channel, CF_PICKUP) && 
+				switch_channel_up(originate_status[i].peer_channel)) {
+				switch_channel_hangup(originate_status[i].peer_channel, SWITCH_CAUSE_NO_PICKUP);
+			}
+		}
+	}
+
 
 	if (pindex > -1 && caller_channel && switch_channel_ready(caller_channel) && !switch_channel_media_ready(caller_channel) && 
 		switch_channel_media_ready(originate_status[pindex].peer_channel)) {
@@ -1337,7 +1363,10 @@ static void *SWITCH_THREAD_FUNC enterprise_originate_thread(switch_thread_t *thr
 
 	if (handle->done != 2) {
 		if (handle->status == SWITCH_STATUS_SUCCESS) {
-			switch_channel_hangup(switch_core_session_get_channel(handle->bleg), SWITCH_CAUSE_LOSE_RACE);
+			switch_channel_t *channel = switch_core_session_get_channel(handle->bleg);
+
+			switch_channel_set_variable(channel, "group_dial_status", "loser");
+			switch_channel_hangup(channel, SWITCH_CAUSE_LOSE_RACE);
 			switch_core_session_rwunlock(handle->bleg);
 		}
 	}
@@ -1405,11 +1434,15 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_enterprise_originate(switch_core_sess
 	struct ent_originate_ringback rb_data = { 0 };
 	const char *ringback_data = NULL;
 	switch_event_t *var_event = NULL;
+	int getcause = 1;
+
+	*cause = SWITCH_CAUSE_SUCCESS;
 
 	switch_core_new_memory_pool(&pool);
 
 	if (zstr(bridgeto)) {
 		*cause = SWITCH_CAUSE_DESTINATION_OUT_OF_ORDER;
+		getcause = 0;
 		switch_goto_status(SWITCH_STATUS_FALSE, end);
 	}
 
@@ -1482,6 +1515,7 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_enterprise_originate(switch_core_sess
 
 	if (!(x_argc = switch_separate_string_string(data, SWITCH_ENT_ORIGINATE_DELIM, x_argv, MAX_PEERS))) {
 		*cause = SWITCH_CAUSE_DESTINATION_OUT_OF_ORDER;
+		getcause = 0;
 		switch_goto_status(SWITCH_STATUS_FALSE, end);
 	}
 
@@ -1571,6 +1605,7 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_enterprise_originate(switch_core_sess
 
 	if (hp) {
 		*cause = hp->cause;
+		getcause = 0;
 		status = hp->status;
 		*bleg = hp->bleg;
 		switch_mutex_unlock(hp->mutex);
@@ -1595,10 +1630,15 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_enterprise_originate(switch_core_sess
 			continue;
 		}
 		switch_mutex_unlock(handles[i].mutex);
+
+		if (getcause && *cause != handles[i].cause && handles[i].cause != SWITCH_CAUSE_LOSE_RACE && handles[i].cause != SWITCH_CAUSE_NO_PICKUP) {
+			*cause = handles[i].cause;
+			getcause++;
+		}
+
 		switch_thread_join(&tstatus, handles[i].thread);
 		switch_event_destroy(&handles[i].ovars);
 	}
-
 
 	if (channel && rb_data.thread) {
 		switch_channel_set_flag(channel, CF_NOT_READY);
@@ -1608,6 +1648,10 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_enterprise_originate(switch_core_sess
 
 
   end:
+
+	if (getcause == 1 && *cause == SWITCH_CAUSE_SUCCESS) {
+		*cause = SWITCH_CAUSE_NO_ANSWER;
+	}
 
 	if (var_event && var_event != ovars) {
 		switch_event_destroy(&var_event);
@@ -2153,6 +2197,9 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *sess
 		if (switch_true(var_val)) {
 			oglobals.early_ok = 0;
 			oglobals.ignore_early_media = 1;
+		} else if (!strcmp(var_val, "consume")) {
+			oglobals.early_ok = 0;
+			oglobals.ignore_early_media = 4;
 		} else if (!strcmp(var_val, "ring_ready")) {
 			oglobals.early_ok = 0;
 			oglobals.ignore_early_media = 2;
@@ -2449,7 +2496,7 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *sess
 							cid_name_override = SWITCH_DEFAULT_CLID_NAME;
 						}
 						if (!cid_num_override) {
-							cid_num_override = "0000000000";
+							cid_num_override = SWITCH_DEFAULT_CLID_NUMBER;
 						}
 
 						new_profile = switch_caller_profile_new(oglobals.pool,
@@ -2697,7 +2744,7 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *sess
 					switch_channel_add_state_handler(originate_status[i].peer_channel, table);
 				}
 				
-				if (oglobals.monitor_early_media_ring || oglobals.monitor_early_media_fail) {
+				if (oglobals.monitor_early_media_ring || oglobals.monitor_early_media_fail || oglobals.ignore_early_media == 4) {
 					switch_channel_set_flag(originate_status[i].peer_channel, CF_CONSUME_ON_ORIGINATE);
 				}
 
@@ -2805,7 +2852,7 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *sess
 			}
 
 			while ((!caller_channel || switch_channel_ready(caller_channel) || switch_channel_test_flag(caller_channel, CF_XFER_ZOMBIE)) &&
-				   check_channel_status(&oglobals, originate_status, and_argc)) {
+				   check_channel_status(&oglobals, originate_status, and_argc, &force_reason)) {
 				time_t elapsed = switch_epoch_time_now(NULL) - start;
 				
 				read_packet = 0;
@@ -3273,6 +3320,9 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_originate(switch_core_session_t *sess
 							switch_ivr_uuid_bridge(holding, switch_core_session_get_uuid(originate_status[i].peer_session));
 							holding = NULL;
 						} else {
+							if (force_reason == SWITCH_CAUSE_LOSE_RACE || reason == SWITCH_CAUSE_LOSE_RACE) {
+								switch_channel_set_variable(originate_status[i].peer_channel, "group_dial_status", "loser");
+							}
 							switch_channel_hangup(originate_status[i].peer_channel, force_reason ? force_reason : reason);
 						}
 					}
